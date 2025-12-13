@@ -689,6 +689,99 @@ def deploy_dolphinscheduler(config, package_file=None, username='ec2-user', key_
         logger.info("Installation output:")
         logger.info(output)
         
+        # Initialize database first (only once, before configuring components)
+        logger.info("Preparing database initialization...")
+        db_config = config['database']
+        
+        # First, configure tools/conf/application.yaml for database initialization
+        logger.info("Configuring tools/conf/application.yaml for database initialization...")
+        tools_yaml_content = f"""spring:
+  profiles:
+    active: mysql
+  banner:
+    charset: UTF-8
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?{db_config.get('params', 'useUnicode=true&characterEncoding=UTF-8')}
+    username: {db_config['username']}
+    password: {db_config['password']}
+    hikari:
+      connection-test-query: select 1
+      pool-name: DolphinScheduler
+
+mybatis-plus:
+  mapper-locations: classpath:org/apache/dolphinscheduler/dao/mapper/*Mapper.xml
+  type-aliases-package: org.apache.dolphinscheduler.dao.entity
+  configuration:
+    cache-enabled: false
+    call-setters-on-nulls: true
+    map-underscore-to-camel-case: true
+    jdbc-type-for-null: NULL
+  global-config:
+    db-config:
+      id-type: auto
+    banner: false
+"""
+        
+        # Upload tools application.yaml
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+            f.write(tools_yaml_content)
+            temp_tools_yaml = f.name
+        
+        try:
+            temp_remote_tools_yaml = "/tmp/tools_application.yaml"
+            upload_file(ssh, temp_tools_yaml, temp_remote_tools_yaml)
+            
+            # Move to final location
+            tools_config_path = f"{install_path}/tools/conf/application.yaml"
+            move_cmd = f"sudo mv {temp_remote_tools_yaml} {tools_config_path} && sudo chown {deploy_user}:{deploy_user} {tools_config_path}"
+            execute_remote_command(ssh, move_cmd)
+            
+            os.remove(temp_tools_yaml)
+            logger.info("✓ Tools configuration uploaded")
+        except Exception as e:
+            logger.error(f"Failed to upload tools configuration: {e}")
+            raise
+        
+        # Check if database is already initialized
+        logger.info("Checking if database needs initialization...")
+        try:
+            import pymysql
+            conn = pymysql.connect(
+                host=db_config['host'],
+                port=db_config.get('port', 3306),
+                user=db_config['username'],
+                password=db_config['password'],
+                database=db_config['database'],
+                connect_timeout=10
+            )
+            cursor = conn.cursor()
+            cursor.execute("SHOW TABLES LIKE 't_ds_version'")
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                logger.info("✓ Database already initialized, skipping schema upgrade")
+            else:
+                logger.info("Database not initialized, running schema upgrade...")
+                # Run upgrade-schema.sh from tools/bin directory
+                # Set DATABASE environment variable for the script
+                upgrade_cmd = f"cd {install_path}/tools && DATABASE=mysql bash bin/upgrade-schema.sh"
+                output = execute_remote_command(ssh, upgrade_cmd, timeout=600)
+                logger.info(f"Schema upgrade completed")
+                logger.info("✓ Database initialized successfully")
+        except Exception as e:
+            logger.warning(f"Could not check database status: {e}")
+            logger.info("Attempting to initialize database anyway...")
+            try:
+                upgrade_cmd = f"cd {install_path}/tools && DATABASE=mysql bash bin/upgrade-schema.sh"
+                output = execute_remote_command(ssh, upgrade_cmd, timeout=600)
+                logger.info(f"Schema upgrade completed")
+                logger.info("✓ Database initialized")
+            except Exception as init_error:
+                logger.error(f"Failed to initialize database: {init_error}")
+                raise
+        
         # Generate and upload application.yaml for each component
         logger.info("Configuring components...")
         import tempfile
@@ -705,17 +798,22 @@ def deploy_dolphinscheduler(config, package_file=None, username='ec2-user', key_
                 logger.info(f"Generating application.yaml for {component_name}...")
                 yaml_content = generate_application_yaml(config, component_name)
                 
-                # Create temp file
+                # Create temp file locally
                 with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
                     f.write(yaml_content)
                     temp_yaml = f.name
                 
-                # Upload to component
-                remote_config_path = f"{install_path}/{component_dir}/conf/application.yaml"
-                logger.info(f"Uploading application.yaml to {component_dir}...")
-                upload_file(ssh, temp_yaml, remote_config_path)
+                # Upload to temporary location first (to avoid permission issues)
+                temp_remote_path = f"/tmp/application_{component_name}.yaml"
+                logger.info(f"Uploading application.yaml for {component_dir}...")
+                upload_file(ssh, temp_yaml, temp_remote_path)
                 
-                # Clean up temp file
+                # Move to final location with sudo and set correct ownership
+                final_config_path = f"{install_path}/{component_dir}/conf/application.yaml"
+                move_cmd = f"sudo mv {temp_remote_path} {final_config_path} && sudo chown {deploy_user}:{deploy_user} {final_config_path}"
+                execute_remote_command(ssh, move_cmd)
+                
+                # Clean up local temp file
                 os.remove(temp_yaml)
                 logger.info(f"✓ {component_name} configured")
                 
@@ -791,25 +889,24 @@ export DOLPHINSCHEDULER_HOME={install_path}
             temp_env_file = f.name
         
         # Upload dolphinscheduler_env.sh to bin/env/ (main location)
+        # Note: The dolphinscheduler-daemon.sh script will automatically copy this file
+        # to each component's conf directory when starting services
         try:
-            remote_env_path = f"{install_path}/bin/env/dolphinscheduler_env.sh"
-            logger.info(f"Uploading dolphinscheduler_env.sh to bin/env/...")
-            upload_file(ssh, temp_env_file, remote_env_path)
-            execute_remote_command(ssh, f"chmod +x {remote_env_path}")
-            logger.info(f"✓ Main dolphinscheduler_env.sh configured")
+            # Upload to temp location first
+            temp_remote_env = "/tmp/dolphinscheduler_env.sh"
+            logger.info(f"Uploading dolphinscheduler_env.sh...")
+            upload_file(ssh, temp_env_file, temp_remote_env)
+            
+            # Move to final location with sudo and set correct ownership
+            final_env_path = f"{install_path}/bin/env/dolphinscheduler_env.sh"
+            move_cmd = f"sudo mv {temp_remote_env} {final_env_path} && sudo chown {deploy_user}:{deploy_user} {final_env_path} && sudo chmod +x {final_env_path}"
+            execute_remote_command(ssh, move_cmd)
+            
+            logger.info(f"✓ dolphinscheduler_env.sh configured at bin/env/")
+            logger.info(f"  (Will be auto-copied to each component's conf/ when services start)")
         except Exception as e:
-            logger.error(f"Failed to upload main env config: {e}")
+            logger.error(f"Failed to upload env config: {e}")
             raise
-        
-        # Create symlinks in each component's conf directory
-        for component_dir in component_map.keys():
-            try:
-                remote_link_path = f"{install_path}/{component_dir}/conf/dolphinscheduler_env.sh"
-                logger.info(f"Creating symlink for {component_dir}...")
-                execute_remote_command(ssh, f"ln -sf {install_path}/bin/env/dolphinscheduler_env.sh {remote_link_path}")
-                logger.info(f"✓ {component_dir} env symlink created")
-            except Exception as e:
-                logger.warning(f"Failed to create symlink for {component_dir}: {e}")
         
         # Clean up temp file
         try:
