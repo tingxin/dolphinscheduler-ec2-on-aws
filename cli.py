@@ -349,24 +349,29 @@ def validate(config):
 
 @cli.command()
 @click.option('--region', required=True, help='AWS region')
+@click.option('--project', help='Project name to filter resources (optional)')
 @click.option('--force', is_flag=True, help='Force cleanup without confirmation')
-def cleanup(region, force):
+def cleanup(region, project, force):
     """
     Clean up orphaned resources by tags
     
     Find and delete all resources managed by dolphinscheduler-cli
     using the ManagedBy tag. Useful when config file is lost.
+    
+    Use --project to only delete resources from a specific project.
     """
     try:
+        if project:
+            message = f'⚠️  This will delete ALL resources with ManagedBy=dolphinscheduler-cli AND Project={project}. Are you sure?'
+        else:
+            message = '⚠️  This will delete ALL resources tagged with ManagedBy=dolphinscheduler-cli. Are you sure?'
+        
         if not force:
-            click.confirm(
-                '⚠️  This will delete ALL resources tagged with ManagedBy=dolphinscheduler-cli. Are you sure?',
-                abort=True
-            )
+            click.confirm(message, abort=True)
         
         from src.commands.delete import cleanup_by_tags
         
-        cleanup_by_tags(region)
+        cleanup_by_tags(region, project_name=project)
         
         click.echo("\n✓ Cleanup completed successfully")
         

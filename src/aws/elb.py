@@ -36,6 +36,9 @@ def create_alb(config, api_instances):
     # Create ALB
     logger.info("Creating Application Load Balancer...")
     
+    # Get project name
+    project_name = config.get('project', {}).get('name', 'dolphinscheduler')
+    
     lb_response = elbv2.create_load_balancer(
         Name='dolphinscheduler-alb',
         Subnets=alb_subnets,
@@ -44,7 +47,8 @@ def create_alb(config, api_instances):
         Type='application',
         Tags=[
             {'Key': 'Name', 'Value': 'dolphinscheduler-alb'},
-            {'Key': 'ManagedBy', 'Value': 'dolphinscheduler-cli'}
+            {'Key': 'ManagedBy', 'Value': 'dolphinscheduler-cli'},
+            {'Key': 'Project', 'Value': project_name}
         ]
     )
     
@@ -71,7 +75,8 @@ def create_alb(config, api_instances):
         UnhealthyThresholdCount=health_check.get('unhealthy_threshold', 3),
         Tags=[
             {'Key': 'Name', 'Value': 'ds-api-tg'},
-            {'Key': 'ManagedBy', 'Value': 'dolphinscheduler-cli'}
+            {'Key': 'ManagedBy', 'Value': 'dolphinscheduler-cli'},
+            {'Key': 'Project', 'Value': project_name}
         ]
     )
     

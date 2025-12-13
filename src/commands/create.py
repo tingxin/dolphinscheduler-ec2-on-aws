@@ -188,8 +188,9 @@ def create_cluster(config):
         logger.info("=" * 70)
         
         version = config['deployment']['version']
+        download_url = config.get('advanced', {}).get('download_url')
         logger.info(f"\nDownloading DolphinScheduler {version}...")
-        package_file = download_dolphinscheduler(version)
+        package_file = download_dolphinscheduler(version, download_url=download_url)
         
         logger.info("\nDeploying to cluster...")
         deploy_dolphinscheduler(config, package_file)

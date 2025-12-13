@@ -11,13 +11,14 @@ from src.utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 
-def download_dolphinscheduler(version, cache_dir='/tmp/ds-cache'):
+def download_dolphinscheduler(version, cache_dir='/tmp/ds-cache', download_url=None):
     """
     Download DolphinScheduler package
     
     Args:
         version: DolphinScheduler version
         cache_dir: Cache directory
+        download_url: Custom download URL (optional)
     
     Returns:
         Path to downloaded file
@@ -32,8 +33,18 @@ def download_dolphinscheduler(version, cache_dir='/tmp/ds-cache'):
         logger.info(f"Using cached package: {local_file}")
         return str(local_file)
     
-    # Download
-    url = f"https://archive.apache.org/dist/dolphinscheduler/{version}/{package_name}"
+    # Determine download URL
+    if download_url:
+        url = download_url
+    else:
+        # Try mirrors first (faster in China)
+        mirrors = [
+            f"https://mirrors.tuna.tsinghua.edu.cn/apache/dolphinscheduler/{version}/{package_name}",
+            f"https://mirrors.aliyun.com/apache/dolphinscheduler/{version}/{package_name}",
+            f"https://archive.apache.org/dist/dolphinscheduler/{version}/{package_name}"
+        ]
+        url = mirrors[0]
+    
     logger.info(f"Downloading from: {url}")
     
     try:
@@ -141,13 +152,16 @@ def create_deployment_user(host, username='ec2-user', deploy_user='dolphinschedu
     ssh = connect_ssh(host, username, key_file)
     
     try:
-        # Check if user exists
-        try:
-            execute_remote_command(ssh, f"id {deploy_user}")
-            logger.info(f"User {deploy_user} already exists")
+        # Check if user exists (suppress error output)
+        stdin, stdout, stderr = ssh.exec_command(f"id {deploy_user}")
+        exit_code = stdout.channel.recv_exit_status()
+        
+        if exit_code == 0:
+            logger.info(f"User {deploy_user} already exists on {host}")
             return True
-        except:
-            pass
+        
+        # User doesn't exist, create it
+        logger.info(f"User {deploy_user} not found, creating...")
         
         # Create user
         create_user_script = f"""

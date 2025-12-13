@@ -83,12 +83,16 @@ def create_ec2_instance(config, component, index, subnet_id, availability_zone):
     custom_tags = ec2_advanced.get('tags', {})
     tag_name = f"ds-{component}-{index}"
     
+    # Get project name from config
+    project_name = config.get('project', {}).get('name', 'dolphinscheduler')
+    
     # Build base tags
     base_tags = {
         'Name': tag_name,
         'Component': component,
         'Index': str(index),
-        'ManagedBy': 'dolphinscheduler-cli'
+        'ManagedBy': 'dolphinscheduler-cli',
+        'Project': project_name
     }
     
     # Merge with custom tags (custom tags won't override base tags)
