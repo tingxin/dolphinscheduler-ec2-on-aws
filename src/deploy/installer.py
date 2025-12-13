@@ -514,13 +514,19 @@ def deploy_dolphinscheduler(config, package_file=None, username='ec2-user', key_
         logger.info("Generating installation configuration...")
         install_config_content = generate_install_config(config)
         
-        # Upload install config
-        temp_config = "/tmp/install_config.conf"
-        with open(temp_config, 'w') as f:
+        # Create temp config file locally
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as f:
             f.write(install_config_content)
+            temp_config = f.name
         
-        upload_file(ssh, temp_config, f"{extract_dir}/conf/config/install_config.conf")
-        os.remove(temp_config)
+        try:
+            # Upload install config
+            upload_file(ssh, temp_config, f"{extract_dir}/conf/config/install_config.conf")
+        finally:
+            # Clean up temp file
+            if os.path.exists(temp_config):
+                os.remove(temp_config)
         
         # Run installation script
         logger.info("Running installation script...")
