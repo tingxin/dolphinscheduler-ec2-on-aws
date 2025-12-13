@@ -690,11 +690,105 @@ def deploy_dolphinscheduler(config, package_file=None, username='ec2-user', key_
         logger.info("Installation output:")
         logger.info(output)
         
-        # Initialize database first (only once, before configuring components)
+        # ========================================================================
+        # STEP 1: Configure dolphinscheduler_env.sh FIRST (contains JAVA_HOME)
+        # This is required for database initialization script to work
+        # ========================================================================
+        logger.info("Configuring dolphinscheduler_env.sh (required for database initialization)...")
+        
+        # Detect JAVA_HOME on remote node
+        detect_java_script = """
+        # Try to find Java installation
+        if [ -n "$JAVA_HOME" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+            echo "$JAVA_HOME"
+        elif [ -x /usr/lib/jvm/java-1.8.0-amazon-corretto/bin/java ]; then
+            echo "/usr/lib/jvm/java-1.8.0-amazon-corretto"
+        elif [ -x /usr/lib/jvm/java-1.8.0/bin/java ]; then
+            echo "/usr/lib/jvm/java-1.8.0"
+        elif [ -x /usr/lib/jvm/java-8-openjdk-amd64/bin/java ]; then
+            echo "/usr/lib/jvm/java-8-openjdk-amd64"
+        else
+            # Try to find using alternatives
+            java_path=$(readlink -f $(which java) 2>/dev/null || echo "")
+            if [ -n "$java_path" ]; then
+                # Remove /bin/java from path
+                echo "${java_path%/bin/java}"
+            else
+                echo "NOT_FOUND"
+            fi
+        fi
+        """
+        
+        java_home = execute_script(ssh, detect_java_script, sudo=False).strip()
+        
+        if java_home == "NOT_FOUND" or not java_home:
+            raise Exception("Could not detect JAVA_HOME on remote node")
+        
+        logger.info(f"Detected JAVA_HOME: {java_home}")
+        
+        # Generate dolphinscheduler_env.sh content
+        env_sh_content = f"""#!/bin/bash
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+# JAVA_HOME configuration
+export JAVA_HOME={java_home}
+
+# DolphinScheduler home
+export DOLPHINSCHEDULER_HOME={install_path}
+
+# Never put sensitive config such as database password here in your production environment,
+# this file will be sourced everytime a new task is executed.
+"""
+        
+        # Create temp env file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+            f.write(env_sh_content)
+            temp_env_file = f.name
+        
+        # Upload dolphinscheduler_env.sh to bin/env/
+        try:
+            temp_remote_env = "/tmp/dolphinscheduler_env.sh"
+            upload_file(ssh, temp_env_file, temp_remote_env)
+            
+            # Move to final location with sudo and set correct ownership
+            final_env_path = f"{install_path}/bin/env/dolphinscheduler_env.sh"
+            move_cmd = f"sudo mv {temp_remote_env} {final_env_path} && sudo chown {deploy_user}:{deploy_user} {final_env_path} && sudo chmod +x {final_env_path}"
+            execute_remote_command(ssh, move_cmd)
+            
+            logger.info(f"✓ dolphinscheduler_env.sh configured with JAVA_HOME={java_home}")
+        except Exception as e:
+            logger.error(f"Failed to upload env config: {e}")
+            raise
+        finally:
+            # Clean up local temp file
+            try:
+                if os.path.exists(temp_env_file):
+                    os.remove(temp_env_file)
+            except Exception as e:
+                logger.warning(f"Failed to clean up temp file: {e}")
+        
+        # ========================================================================
+        # STEP 2: Initialize database (now JAVA_HOME is available)
+        # ========================================================================
         logger.info("Preparing database initialization...")
         db_config = config['database']
         
-        # First, configure tools/conf/application.yaml for database initialization
+        # Configure tools/conf/application.yaml for database initialization
         logger.info("Configuring tools/conf/application.yaml for database initialization...")
         tools_yaml_content = f"""spring:
   profiles:
@@ -821,99 +915,7 @@ mybatis-plus:
                 logger.error(f"Failed to configure {component_name}: {e}")
                 raise
         
-        # Configure dolphinscheduler_env.sh with JAVA_HOME
-        logger.info("Configuring dolphinscheduler_env.sh...")
-        
-        # Detect JAVA_HOME on remote node
-        detect_java_script = """
-        # Try to find Java installation
-        if [ -n "$JAVA_HOME" ] && [ -x "$JAVA_HOME/bin/java" ]; then
-            echo "$JAVA_HOME"
-        elif [ -x /usr/lib/jvm/java-1.8.0-amazon-corretto/bin/java ]; then
-            echo "/usr/lib/jvm/java-1.8.0-amazon-corretto"
-        elif [ -x /usr/lib/jvm/java-1.8.0/bin/java ]; then
-            echo "/usr/lib/jvm/java-1.8.0"
-        elif [ -x /usr/lib/jvm/java-8-openjdk-amd64/bin/java ]; then
-            echo "/usr/lib/jvm/java-8-openjdk-amd64"
-        else
-            # Try to find using alternatives
-            java_path=$(readlink -f $(which java) 2>/dev/null || echo "")
-            if [ -n "$java_path" ]; then
-                # Remove /bin/java from path
-                echo "${java_path%/bin/java}"
-            else
-                echo "NOT_FOUND"
-            fi
-        fi
-        """
-        
-        java_home = execute_script(ssh, detect_java_script, sudo=False).strip()
-        
-        if java_home == "NOT_FOUND" or not java_home:
-            raise Exception("Could not detect JAVA_HOME on remote node")
-        
-        logger.info(f"Detected JAVA_HOME: {java_home}")
-        
-        # Generate dolphinscheduler_env.sh content
-        env_sh_content = f"""#!/bin/bash
-#
-# Licensed to the Apache Software Foundation (ASF) under one or more
-# contributor license agreements.  See the NOTICE file distributed with
-# this work for additional information regarding copyright ownership.
-# The ASF licenses this file to You under the Apache License, Version 2.0
-# (the "License"); you may not use this file except in compliance with
-# the License.  You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
 
-# JAVA_HOME configuration
-export JAVA_HOME={java_home}
-
-# DolphinScheduler home
-export DOLPHINSCHEDULER_HOME={install_path}
-
-# Never put sensitive config such as database password here in your production environment,
-# this file will be sourced everytime a new task is executed.
-"""
-        
-        # Create temp env file
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
-            f.write(env_sh_content)
-            temp_env_file = f.name
-        
-        # Upload dolphinscheduler_env.sh to bin/env/ (main location)
-        # Note: The dolphinscheduler-daemon.sh script will automatically copy this file
-        # to each component's conf directory when starting services
-        try:
-            # Upload to temp location first
-            temp_remote_env = "/tmp/dolphinscheduler_env.sh"
-            logger.info(f"Uploading dolphinscheduler_env.sh...")
-            upload_file(ssh, temp_env_file, temp_remote_env)
-            
-            # Move to final location with sudo and set correct ownership
-            final_env_path = f"{install_path}/bin/env/dolphinscheduler_env.sh"
-            move_cmd = f"sudo mv {temp_remote_env} {final_env_path} && sudo chown {deploy_user}:{deploy_user} {final_env_path} && sudo chmod +x {final_env_path}"
-            execute_remote_command(ssh, move_cmd)
-            
-            logger.info(f"✓ dolphinscheduler_env.sh configured at bin/env/")
-            logger.info(f"  (Will be auto-copied to each component's conf/ when services start)")
-        except Exception as e:
-            logger.error(f"Failed to upload env config: {e}")
-            raise
-        
-        # Clean up temp file
-        try:
-            if os.path.exists(temp_env_file):
-                os.remove(temp_env_file)
-        except Exception as e:
-            logger.warning(f"Failed to clean up temp file: {e}")
         
         logger.info("✓ DolphinScheduler deployed")
         return True
