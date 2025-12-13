@@ -1,0 +1,227 @@
+# DolphinScheduler 3.2.0 EC2 Cluster Configuration Example
+# Copy this file to my-cluster-config.yaml and fill in your values
+
+# ================================================================================
+# 【必填配置】以下配置必须填写
+# ================================================================================
+
+# ===== 数据库配置 (RDS MySQL) - 必填 =====
+database:
+  type: mysql
+  host: my-rds.us-west-2.rds.amazonaws.com  # 必填：RDS 端点地址
+  port: 3306
+  username: dolphinscheduler  # 必填：数据库用户名
+  password: MySecurePassword123  # 必填：数据库密码
+  database: dolphinscheduler  # 必填：数据库名称
+  params: useUnicode=true&characterEncoding=UTF-8&useSSL=false
+
+# ===== 注册中心配置 (Zookeeper) - 必填 =====
+registry:
+  type: zookeeper
+  # 必填：Zookeeper 集群地址
+  servers:
+    - 10.0.5.10:2181
+    - 10.0.5.11:2181
+    - 10.0.5.12:2181
+  namespace: dolphinscheduler
+  connection_timeout: 30000
+  session_timeout: 60000
+  retry:
+    base_sleep_time: 1000
+    max_sleep_time: 3000
+    max_retries: 5
+
+# ===== 资源存储配置 (S3) - 必填 =====
+storage:
+  type: S3
+  bucket: my-dolphinscheduler-bucket  # 必填：S3 bucket 名称
+  region: us-west-2  # 必填：S3 区域
+  upload_path: /dolphinscheduler
+  use_iam_role: true  # 推荐使用 IAM Role
+  access_key_id: ""
+  secret_access_key: ""
+  endpoint: ""
+
+# ===== AWS 基础配置 - 必填 =====
+aws:
+  region: us-west-2  # 必填：AWS 区域
+  vpc_id: vpc-0123456789abcdef0  # 必填：VPC ID
+  # 必填：子网配置（跨可用区）
+  subnets:
+    - subnet_id: subnet-0123456789abcdef0  # 可用区 A
+      availability_zone: us-west-2a
+    - subnet_id: subnet-0123456789abcdef1  # 可用区 B
+      availability_zone: us-west-2b
+    - subnet_id: subnet-0123456789abcdef2  # 可用区 C
+      availability_zone: us-west-2c
+  key_name: my-ec2-keypair  # 必填：SSH 密钥对名称
+  iam_instance_profile: DolphinSchedulerS3Role  # 必填（如果 use_iam_role=true）
+  # 必填：安全组配置
+  security_groups:
+    master: sg-master-0123456789abcdef0
+    worker: sg-worker-0123456789abcdef0
+    api: sg-api-0123456789abcdef0
+    alert: sg-alert-0123456789abcdef0
+
+# ===== 集群节点配置 - 必填 =====
+cluster:
+  # Master 节点配置
+  master:
+    count: 2  # 必填：节点数量（建议 2-3 个）
+    instance_type: t3.large  # 必填：实例类型
+    # 节点列表（创建后自动填充）
+    nodes: []
+
+  # Worker 节点配置
+  worker:
+    count: 3  # 必填：节点数量（根据任务量调整）
+    instance_type: t3.xlarge  # 必填：实例类型
+    nodes: []
+
+  # API 节点配置
+  api:
+    count: 2  # 必填：节点数量（建议 2 个以上）
+    instance_type: t3.medium  # 必填：实例类型
+    nodes: []
+
+  # Alert 节点配置
+  alert:
+    count: 1  # 必填：节点数量（通常 1 个即可）
+    instance_type: t3.small  # 必填：实例类型
+    nodes: []
+
+# ===== 部署配置 - 必填 =====
+deployment:
+  user: dolphinscheduler  # 必填：部署用户（需要 sudo 权限）
+  install_path: /opt/dolphinscheduler  # 必填：安装路径
+  version: 3.2.0  # 必填：DolphinScheduler 版本
+
+# ================================================================================
+# 【可选配置】以下配置有默认值，可根据需要调整
+# ================================================================================
+
+# ===== EC2 实例详细配置（可选）=====
+ec2_advanced:
+  master:
+    root_volume_size: 50
+    root_volume_type: gp3
+    tags:
+      Name: dolphinscheduler-master
+      Environment: production
+      Component: master
+
+  worker:
+    root_volume_size: 100
+    root_volume_type: gp3
+    tags:
+      Name: dolphinscheduler-worker
+      Environment: production
+      Component: worker
+
+  api:
+    root_volume_size: 30
+    root_volume_type: gp3
+    tags:
+      Name: dolphinscheduler-api
+      Environment: production
+      Component: api
+
+  alert:
+    root_volume_size: 20
+    root_volume_type: gp3
+    tags:
+      Name: dolphinscheduler-alert
+      Environment: production
+      Component: alert
+
+# ===== 服务配置（可选）=====
+service_config:
+  master:
+    listen_port: 5678
+    exec_threads: 100
+    dispatch_task_number: 3
+    host_selector: LowerWeight
+    heartbeat_interval: 10
+    task_commit_retry_times: 5
+    task_commit_interval: 1
+    max_cpu_load_avg: -1
+    reserved_memory: 0.3
+
+  worker:
+    listen_port: 1234
+    exec_threads: 100
+    heartbeat_interval: 10
+    max_cpu_load_avg: -1
+    reserved_memory: 0.3
+    exec_path: /tmp/dolphinscheduler/exec
+
+  api:
+    port: 12345
+    session_timeout: 7200
+    context_path: /dolphinscheduler
+    load_balancer:
+      enabled: false  # 设置为 true 启用 ALB
+      type: application
+      scheme: internet-facing
+      subnets:
+        - subnet-public-0123456789abcdef0
+        - subnet-public-0123456789abcdef1
+      listener_port: 80
+      health_check:
+        path: /dolphinscheduler/actuator/health
+        interval: 30
+        timeout: 5
+        healthy_threshold: 2
+        unhealthy_threshold: 3
+
+  alert:
+    port: 50052
+    wait_timeout: 5000
+
+# ===== JVM 配置（可选）=====
+jvm:
+  master:
+    xms: 4g
+    xmx: 4g
+    xmn: 2g
+    gc: G1GC
+    extra_opts: "-XX:+UseG1GC -XX:+PrintGCDetails -Xloggc:logs/gc.log"
+
+  worker:
+    xms: 8g
+    xmx: 8g
+    xmn: 4g
+    gc: G1GC
+    extra_opts: "-XX:+UseG1GC -XX:+PrintGCDetails -Xloggc:logs/gc.log"
+
+  api:
+    xms: 2g
+    xmx: 2g
+    xmn: 1g
+    gc: G1GC
+    extra_opts: "-XX:+UseG1GC -XX:+PrintGCDetails -Xloggc:logs/gc.log"
+
+  alert:
+    xms: 1g
+    xmx: 1g
+    xmn: 512m
+    gc: G1GC
+    extra_opts: "-XX:+UseG1GC -XX:+PrintGCDetails -Xloggc:logs/gc.log"
+
+# ===== 其他配置（可选）=====
+advanced:
+  download_url: https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
+  
+  logging:
+    level: INFO
+    retention_days: 7
+    path: logs
+
+  security:
+    https_enabled: false
+    ssl_cert_path: ""
+    ssl_key_path: ""
+
+  monitoring:
+    prometheus_enabled: false
+    prometheus_port: 9090

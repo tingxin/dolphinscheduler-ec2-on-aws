@@ -1,0 +1,29 @@
+# AWS SDK
+boto3>=1.34.0
+
+# CLI Framework
+click>=8.1.7
+
+# Configuration
+PyYAML>=6.0.1
+
+# SSH
+paramiko>=3.4.0
+
+# Database
+PyMySQL>=1.1.0
+
+# Zookeeper
+kazoo>=2.10.0
+
+# Utilities
+python-dotenv>=1.0.0
+tqdm>=4.66.0
+deepdiff>=6.7.0
+
+# Logging
+colorlog>=6.8.0
+
+# Testing
+pytest>=7.4.0
+pytest-mock>=3.12.0
