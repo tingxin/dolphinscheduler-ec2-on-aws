@@ -932,8 +932,8 @@ mybatis-plus:
                 execute_remote_command(ssh, perm_cmd)
                 
                 # Run upgrade-schema.sh from tools/bin directory
-                # Set DATABASE environment variable and custom GC log path
-                upgrade_cmd = f"cd {install_path}/tools && DATABASE=mysql JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -Xmn512m -XX:+PrintGCDetails -Xloggc:{install_path}/tools/gc.log -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/tools/dump.hprof' bash bin/upgrade-schema.sh"
+                # Set DATABASE environment variable and Java 17 compatible JVM options
+                upgrade_cmd = f"cd {install_path}/tools && DATABASE=mysql JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -Xlog:gc:{install_path}/tools/gc.log -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/tools/dump.hprof' bash bin/upgrade-schema.sh"
                 output = execute_remote_command(ssh, upgrade_cmd, timeout=600)
                 logger.info(f"Schema upgrade completed")
                 logger.info("✓ Database initialized successfully")
@@ -946,8 +946,8 @@ mybatis-plus:
                 perm_cmd = f"sudo chown -R {deploy_user}:{deploy_user} {install_path}/tools && sudo chmod -R 755 {install_path}/tools"
                 execute_remote_command(ssh, perm_cmd)
                 
-                # Run with custom JAVA_OPTS
-                upgrade_cmd = f"cd {install_path}/tools && DATABASE=mysql JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -Xmn512m -XX:+PrintGCDetails -Xloggc:{install_path}/tools/gc.log -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/tools/dump.hprof' bash bin/upgrade-schema.sh"
+                # Run with Java 17 compatible JAVA_OPTS
+                upgrade_cmd = f"cd {install_path}/tools && DATABASE=mysql JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -Xlog:gc:{install_path}/tools/gc.log -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/tools/dump.hprof' bash bin/upgrade-schema.sh"
                 output = execute_remote_command(ssh, upgrade_cmd, timeout=600)
                 logger.info(f"Schema upgrade completed")
                 logger.info("✓ Database initialized")
