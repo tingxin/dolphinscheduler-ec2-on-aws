@@ -16,8 +16,8 @@ database:
   type: mysql
   host: tx-db.cbore8wpy3mc.us-east-2.rds.amazonaws.com  # 必填：RDS 端点地址
   port: 3306
-  username: user  # 必填：数据库用户名
-  password: 1234  # 必填：数据库密码
+  username: demo  # 必填：数据库用户名
+  password: Demo1234  # 必填：数据库密码
   database: dolphinscheduler  # 必填：数据库名称
   params: useUnicode=true&characterEncoding=UTF-8&useSSL=false
 
