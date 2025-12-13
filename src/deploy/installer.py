@@ -512,21 +512,48 @@ def deploy_dolphinscheduler(config, package_file=None, username='ec2-user', key_
         
         # Generate install config
         logger.info("Generating installation configuration...")
-        install_config_content = generate_install_config(config)
+        try:
+            install_config_content = generate_install_config(config)
+            logger.debug(f"Generated config content length: {len(install_config_content)}")
+        except Exception as e:
+            logger.error(f"Failed to generate install config: {e}")
+            raise
         
         # Create temp config file locally
         import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as f:
-            f.write(install_config_content)
-            temp_config = f.name
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as f:
+                f.write(install_config_content)
+                temp_config = f.name
+            logger.debug(f"Created temp config file: {temp_config}")
+        except Exception as e:
+            logger.error(f"Failed to create temp config file: {e}")
+            raise
         
         try:
+            # Ensure remote directory exists
+            remote_config_dir = f"{extract_dir}/conf/config"
+            logger.info(f"Ensuring remote directory exists: {remote_config_dir}")
+            execute_remote_command(ssh, f"mkdir -p {remote_config_dir}")
+            
             # Upload install config
-            upload_file(ssh, temp_config, f"{extract_dir}/conf/config/install_config.conf")
+            remote_config_path = f"{remote_config_dir}/install_config.conf"
+            logger.info(f"Uploading config to: {remote_config_path}")
+            upload_file(ssh, temp_config, remote_config_path)
+            logger.info("✓ Configuration uploaded")
+        except Exception as e:
+            import traceback
+            logger.error(f"Failed to upload config: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
         finally:
             # Clean up temp file
-            if os.path.exists(temp_config):
-                os.remove(temp_config)
+            try:
+                if os.path.exists(temp_config):
+                    os.remove(temp_config)
+                    logger.debug(f"Cleaned up temp file: {temp_config}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up temp file: {e}")
         
         # Run installation script
         logger.info("Running installation script...")
