@@ -23,15 +23,29 @@ def download_dolphinscheduler(version, cache_dir='/tmp/ds-cache', download_url=N
     Returns:
         Path to downloaded file
     """
+    import hashlib
+    
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
     
     package_name = f"apache-dolphinscheduler-{version}-bin.tar.gz"
     local_file = cache_path / package_name
     
+    # Check if cached file exists and is valid
     if local_file.exists():
-        logger.info(f"Using cached package: {local_file}")
-        return str(local_file)
+        logger.info(f"Found cached package: {local_file}")
+        
+        # Verify file integrity by checking if it's a valid gzip
+        try:
+            import gzip
+            with gzip.open(str(local_file), 'rb') as f:
+                f.read(1024)  # Try to read first 1KB
+            logger.info(f"✓ Cached package is valid")
+            return str(local_file)
+        except Exception as e:
+            logger.warning(f"Cached package is corrupted: {e}")
+            logger.info("Removing corrupted file and re-downloading...")
+            local_file.unlink()
     
     # Determine download URL
     if download_url:
@@ -48,10 +62,32 @@ def download_dolphinscheduler(version, cache_dir='/tmp/ds-cache', download_url=N
     logger.info(f"Downloading from: {url}")
     
     try:
-        urllib.request.urlretrieve(url, str(local_file))
-        logger.info(f"✓ Downloaded: {local_file}")
+        # Download with progress
+        import urllib.request
+        
+        def download_progress(block_num, block_size, total_size):
+            downloaded = block_num * block_size
+            if total_size > 0:
+                percent = min(downloaded * 100.0 / total_size, 100)
+                print(f"\rDownload progress: {percent:.1f}%", end='', flush=True)
+        
+        urllib.request.urlretrieve(url, str(local_file), reporthook=download_progress)
+        print()  # New line after progress
+        
+        # Verify downloaded file
+        logger.info("Verifying downloaded file...")
+        import gzip
+        with gzip.open(str(local_file), 'rb') as f:
+            f.read(1024)  # Try to read first 1KB
+        
+        file_size = local_file.stat().st_size
+        logger.info(f"✓ Downloaded and verified: {local_file} ({file_size / 1024 / 1024:.1f} MB)")
         return str(local_file)
+        
     except Exception as e:
+        # Clean up partial download
+        if local_file.exists():
+            local_file.unlink()
         raise Exception(f"Download failed: {str(e)}")
 
 
@@ -67,7 +103,7 @@ def initialize_node(host, username='ec2-user', key_file=None):
     Returns:
         True if successful
     """
-    logger.info(f"Initializing node: {host}")
+    logger.debug(f"Initializing node: {host}")
     
     ssh = connect_ssh(host, username, key_file)
     
@@ -78,56 +114,47 @@ def initialize_node(host, username='ec2-user', key_file=None):
         is_ubuntu = 'Ubuntu' in os_info
         
         # Install dependencies
-        logger.info("Installing system dependencies...")
+        logger.debug(f"Installing system dependencies on {host}...")
         
         if is_amazon_linux:
             install_script = """
-            # Update system
-            sudo dnf update -y
+            # Skip system update for faster deployment
+            # sudo dnf update -y
             
-            # Install Java
-            sudo dnf install -y java-1.8.0-amazon-corretto java-1.8.0-amazon-corretto-devel
-            
-            # Install MySQL client
-            sudo dnf install -y mariadb105
-            
-            # Install utilities
-            sudo dnf install -y psmisc tar gzip wget curl nc
-            
-            # Install Python (optional)
-            sudo dnf install -y python3 python3-pip
+            # Install all packages in one command (faster)
+            sudo dnf install -y --skip-broken \
+                java-1.8.0-amazon-corretto \
+                java-1.8.0-amazon-corretto-devel \
+                mariadb105 \
+                psmisc tar gzip wget curl nc \
+                python3 python3-pip
             
             # Verify installations
-            java -version
-            mysql --version
+            java -version 2>&1 | head -1
+            mysql --version 2>&1 | head -1
             """
         elif is_ubuntu:
             install_script = """
-            # Update system
-            sudo apt-get update
+            # Update package list (required for Ubuntu)
+            sudo apt-get update -qq
             
-            # Install Java
-            sudo apt-get install -y openjdk-8-jdk
-            
-            # Install MySQL client
-            sudo apt-get install -y mysql-client
-            
-            # Install utilities
-            sudo apt-get install -y psmisc tar gzip wget curl netcat
-            
-            # Install Python (optional)
-            sudo apt-get install -y python3 python3-pip
+            # Install all packages in one command (faster)
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                openjdk-8-jdk \
+                mysql-client \
+                psmisc tar gzip wget curl netcat \
+                python3 python3-pip
             
             # Verify installations
-            java -version
-            mysql --version
+            java -version 2>&1 | head -1
+            mysql --version 2>&1 | head -1
             """
         else:
             raise Exception(f"Unsupported OS: {os_info}")
         
         execute_script(ssh, install_script, sudo=False)
         
-        logger.info("✓ System dependencies installed")
+        logger.debug(f"✓ System dependencies installed on {host}")
         return True
         
     finally:
@@ -218,8 +245,11 @@ def setup_ssh_keys(nodes, username='ec2-user', key_file=None):
     finally:
         ssh.close()
     
-    # Distribute public key to all nodes
-    for node in nodes:
+    # Distribute public key to all nodes in parallel
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from tqdm import tqdm
+    
+    def add_key_to_node(node):
         ssh = connect_ssh(node['host'], username, key_file)
         try:
             add_key_script = f"""
@@ -229,9 +259,22 @@ def setup_ssh_keys(nodes, username='ec2-user', key_file=None):
             chmod 600 ~/.ssh/authorized_keys
             """
             execute_remote_command(ssh, add_key_script)
-            logger.info(f"✓ SSH key added to {node['host']}")
+            return node['host']
         finally:
             ssh.close()
+    
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(add_key_to_node, node): node for node in nodes}
+        
+        with tqdm(total=len(nodes), desc="Distributing SSH keys") as pbar:
+            for future in as_completed(futures):
+                try:
+                    host = future.result()
+                    logger.info(f"✓ SSH key added to {host}")
+                    pbar.update(1)
+                except Exception as e:
+                    logger.error(f"Failed to add SSH key: {e}")
+                    raise
     
     return True
 
@@ -258,8 +301,11 @@ def configure_hosts_file(nodes, username='ec2-user', key_file=None):
     
     hosts_content = "\n".join(hosts_entries)
     
-    # Add to all nodes
-    for node in nodes:
+    # Add to all nodes in parallel
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from tqdm import tqdm
+    
+    def update_hosts_on_node(node):
         ssh = connect_ssh(node['host'], username, key_file)
         try:
             # Backup and update hosts file
@@ -273,9 +319,22 @@ def configure_hosts_file(nodes, username='ec2-user', key_file=None):
 EOF
             """
             execute_script(ssh, update_hosts_script, sudo=False)
-            logger.info(f"✓ Hosts file updated on {node['host']}")
+            return node['host']
         finally:
             ssh.close()
+    
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(update_hosts_on_node, node): node for node in nodes}
+        
+        with tqdm(total=len(nodes), desc="Updating hosts files") as pbar:
+            for future in as_completed(futures):
+                try:
+                    host = future.result()
+                    logger.info(f"✓ Hosts file updated on {host}")
+                    pbar.update(1)
+                except Exception as e:
+                    logger.error(f"Failed to update hosts file: {e}")
+                    raise
     
     return True
 
@@ -353,13 +412,13 @@ installPath="{deployment_config['install_path']}"
     return install_config
 
 
-def deploy_dolphinscheduler(config, package_file, username='ec2-user', key_file=None):
+def deploy_dolphinscheduler(config, package_file=None, username='ec2-user', key_file=None):
     """
     Deploy DolphinScheduler to all nodes
     
     Args:
         config: Configuration dictionary
-        package_file: Path to DolphinScheduler package
+        package_file: Path to DolphinScheduler package (optional, will download on remote if not provided)
         username: SSH username
         key_file: SSH key file path
     
@@ -371,14 +430,78 @@ def deploy_dolphinscheduler(config, package_file, username='ec2-user', key_file=
     # Get first master node for installation
     first_master = config['cluster']['master']['nodes'][0]['host']
     install_path = config['deployment']['install_path']
+    version = config['deployment']['version']
     
     ssh = connect_ssh(first_master, username, key_file)
     
     try:
-        # Upload package
-        logger.info("Uploading DolphinScheduler package...")
-        remote_package = f"/tmp/{Path(package_file).name}"
-        upload_file(ssh, package_file, remote_package, show_progress=True)
+        remote_package = f"/tmp/apache-dolphinscheduler-{version}-bin.tar.gz"
+        
+        # Option 1: Download directly on remote node (faster, recommended)
+        if package_file is None or config.get('deployment', {}).get('download_on_remote', True):
+            logger.info("Downloading DolphinScheduler directly on target node...")
+            
+            # Get download URL
+            download_url = config.get('advanced', {}).get('download_url')
+            if not download_url:
+                # Use mirror
+                download_url = f"https://mirrors.tuna.tsinghua.edu.cn/apache/dolphinscheduler/{version}/apache-dolphinscheduler-{version}-bin.tar.gz"
+            
+            logger.info(f"Download URL: {download_url}")
+            
+            # Download on remote
+            download_script = f"""
+            # Check if already downloaded
+            if [ -f {remote_package} ]; then
+                echo "Package already exists, verifying..."
+                if gzip -t {remote_package} 2>/dev/null; then
+                    echo "Package is valid, skipping download"
+                    exit 0
+                else
+                    echo "Package is corrupted, re-downloading..."
+                    rm -f {remote_package}
+                fi
+            fi
+            
+            # Download
+            echo "Downloading from {download_url}..."
+            wget -O {remote_package} {download_url} || curl -L -o {remote_package} {download_url}
+            
+            # Verify
+            if gzip -t {remote_package}; then
+                echo "Download successful and verified"
+            else
+                echo "Downloaded file is corrupted"
+                rm -f {remote_package}
+                exit 1
+            fi
+            """
+            
+            execute_script(ssh, download_script, sudo=False)
+            logger.info("✓ Package downloaded on remote node")
+            
+        # Option 2: Upload from local (fallback)
+        else:
+            logger.info("Uploading DolphinScheduler package from local...")
+            upload_file(ssh, package_file, remote_package, show_progress=True)
+            
+            # Verify uploaded file
+            logger.info("Verifying uploaded file...")
+            local_size = os.path.getsize(package_file)
+            remote_size_output = execute_remote_command(ssh, f"stat -c %s {remote_package}")
+            remote_size = int(remote_size_output.strip())
+            
+            if local_size != remote_size:
+                raise Exception(f"File size mismatch: local={local_size}, remote={remote_size}")
+            
+            logger.info(f"✓ File verified ({remote_size / 1024 / 1024:.1f} MB)")
+            
+            # Test if file is valid gzip
+            logger.info("Testing archive integrity...")
+            test_result = execute_remote_command(ssh, f"gzip -t {remote_package} && echo 'OK' || echo 'FAILED'")
+            if 'FAILED' in test_result:
+                raise Exception("Uploaded file is not a valid gzip archive")
+            logger.info("✓ Archive integrity verified")
         
         # Extract package
         logger.info("Extracting package...")

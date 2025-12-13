@@ -104,6 +104,9 @@ deployment:
   user: dolphinscheduler  # 必填：部署用户（需要 sudo 权限）
   install_path: /opt/dolphinscheduler  # 必填：安装路径
   version: 3.2.0  # 必填：DolphinScheduler 版本
+  skip_system_update: true  # 跳过系统更新以加快部署（推荐）
+  parallel_init_workers: 10  # 并行初始化的最大线程数
+  download_on_remote: true  # 在目标节点直接下载（推荐，更快）
 
 # ================================================================================
 # 【可选配置】以下配置有默认值，可根据需要调整

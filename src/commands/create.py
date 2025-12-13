@@ -2,6 +2,7 @@
 Create cluster command implementation
 """
 from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.aws.ec2 import create_instances_parallel, wait_for_service_ready
 from src.deploy.ssh import wait_for_ssh
 from src.deploy.installer import (
@@ -16,6 +17,81 @@ from src.deploy.installer import (
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
+
+
+def wait_for_ssh_parallel(hosts, max_workers=10):
+    """
+    Wait for SSH on multiple hosts in parallel
+    
+    Args:
+        hosts: List of host addresses
+        max_workers: Maximum parallel workers
+    """
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(wait_for_ssh, host): host for host in hosts}
+        
+        with tqdm(total=len(hosts), desc="SSH availability") as pbar:
+            for future in as_completed(futures):
+                host = futures[future]
+                try:
+                    if not future.result():
+                        raise Exception(f"SSH not available on {host}")
+                    pbar.update(1)
+                except Exception as e:
+                    logger.error(f"SSH failed for {host}: {e}")
+                    raise
+
+
+def initialize_nodes_parallel(hosts, state, max_workers=10):
+    """
+    Initialize multiple nodes in parallel
+    
+    Args:
+        hosts: List of host addresses
+        state: Deployment state
+        max_workers: Maximum parallel workers
+    """
+    logger.info(f"Initializing {len(hosts)} nodes in parallel (max {max_workers} concurrent)...")
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(initialize_node, host): host for host in hosts}
+        
+        completed = 0
+        with tqdm(total=len(hosts), desc="Node initialization", unit="node") as pbar:
+            for future in as_completed(futures):
+                host = futures[future]
+                try:
+                    future.result()
+                    state.add_initialized_node(host)
+                    completed += 1
+                    pbar.update(1)
+                    logger.info(f"✓ Node {completed}/{len(hosts)} initialized: {host}")
+                except Exception as e:
+                    logger.error(f"Initialization failed for {host}: {e}")
+                    raise
+
+
+def create_users_parallel(hosts, deploy_user, max_workers=10):
+    """
+    Create deployment user on multiple nodes in parallel
+    
+    Args:
+        hosts: List of host addresses
+        deploy_user: Deployment user name
+        max_workers: Maximum parallel workers
+    """
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(create_deployment_user, host, deploy_user=deploy_user): host for host in hosts}
+        
+        with tqdm(total=len(hosts), desc="Creating users") as pbar:
+            for future in as_completed(futures):
+                host = futures[future]
+                try:
+                    future.result()
+                    pbar.update(1)
+                except Exception as e:
+                    logger.error(f"User creation failed for {host}: {e}")
+                    raise
 
 
 class DeploymentState:
@@ -135,9 +211,7 @@ def create_cluster(config):
                 all_hosts.append(instance.private_ip_address)
         
         logger.info(f"\nWaiting for SSH on {len(all_hosts)} nodes...")
-        for host in tqdm(all_hosts, desc="SSH availability"):
-            if not wait_for_ssh(host):
-                raise Exception(f"SSH not available on {host}")
+        wait_for_ssh_parallel(all_hosts)
         
         logger.info("✓ SSH available on all nodes")
         
@@ -147,14 +221,12 @@ def create_cluster(config):
         logger.info("=" * 70)
         
         logger.info("\nInstalling system dependencies...")
-        for host in tqdm(all_hosts, desc="Node initialization"):
-            initialize_node(host)
-            state.add_initialized_node(host)
+        max_workers = config.get('deployment', {}).get('parallel_init_workers', 10)
+        initialize_nodes_parallel(all_hosts, state, max_workers=max_workers)
         
         logger.info("\nCreating deployment user...")
         deploy_user = config['deployment']['user']
-        for host in tqdm(all_hosts, desc="Creating users"):
-            create_deployment_user(host, deploy_user=deploy_user)
+        create_users_parallel(all_hosts, deploy_user)
         
         logger.info("✓ All nodes initialized")
         
@@ -188,12 +260,20 @@ def create_cluster(config):
         logger.info("=" * 70)
         
         version = config['deployment']['version']
-        download_url = config.get('advanced', {}).get('download_url')
-        logger.info(f"\nDownloading DolphinScheduler {version}...")
-        package_file = download_dolphinscheduler(version, download_url=download_url)
         
-        logger.info("\nDeploying to cluster...")
-        deploy_dolphinscheduler(config, package_file)
+        # Check if we should download on remote or local
+        download_on_remote = config.get('deployment', {}).get('download_on_remote', True)
+        
+        if download_on_remote:
+            logger.info(f"\nDolphinScheduler {version} will be downloaded directly on target node...")
+            logger.info("\nDeploying to cluster...")
+            deploy_dolphinscheduler(config, package_file=None)
+        else:
+            logger.info(f"\nDownloading DolphinScheduler {version} on local machine...")
+            download_url = config.get('advanced', {}).get('download_url')
+            package_file = download_dolphinscheduler(version, download_url=download_url)
+            logger.info("\nDeploying to cluster...")
+            deploy_dolphinscheduler(config, package_file=package_file)
         
         logger.info("✓ DolphinScheduler deployed")
         
