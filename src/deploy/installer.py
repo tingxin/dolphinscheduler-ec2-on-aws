@@ -339,6 +339,48 @@ EOF
     return True
 
 
+def generate_common_properties(config):
+    """
+    Generate common.properties for DolphinScheduler 3.3.2+
+    
+    Args:
+        config: Configuration dictionary
+    
+    Returns:
+        Configuration content string
+    """
+    db_config = config['database']
+    registry_config = config['registry']
+    storage_config = config['storage']
+    
+    # Build database URL
+    db_url = f"jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?{db_config.get('params', 'useUnicode=true&characterEncoding=UTF-8')}"
+    
+    # Build Zookeeper connection string
+    zk_connect = ','.join(registry_config['servers'])
+    
+    common_properties = f"""# Database Configuration
+spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver
+spring.datasource.url={db_url}
+spring.datasource.username={db_config['username']}
+spring.datasource.password={db_config['password']}
+
+# Registry Configuration
+registry.type={registry_config['type']}
+registry.zookeeper.connect-string={zk_connect}
+registry.zookeeper.namespace={registry_config.get('namespace', 'dolphinscheduler')}
+
+# Resource Storage Configuration
+resource.storage.type={storage_config['type']}
+resource.storage.upload.base.path={storage_config.get('upload_path', '/dolphinscheduler')}
+resource.aws.region={storage_config['region']}
+resource.aws.s3.bucket.name={storage_config['bucket']}
+resource.aws.s3.endpoint={storage_config.get('endpoint', '')}
+"""
+    
+    return common_properties
+
+
 def generate_install_config(config):
     """
     Generate DolphinScheduler install_config.conf
@@ -530,41 +572,72 @@ def deploy_dolphinscheduler(config, package_file=None, username='ec2-user', key_
             logger.error(f"Failed to create temp config file: {e}")
             raise
         
+        # Generate common.properties for DolphinScheduler 3.3.2+
+        logger.info("Generating common.properties configuration...")
         try:
-            # Ensure remote directory exists
-            remote_config_dir = f"{extract_dir}/conf/config"
-            logger.info(f"Ensuring remote directory exists: {remote_config_dir}")
-            execute_remote_command(ssh, f"mkdir -p {remote_config_dir}")
+            common_props_content = generate_common_properties(config)
             
-            # Upload install config
-            remote_config_path = f"{remote_config_dir}/install_config.conf"
-            logger.info(f"Uploading config to: {remote_config_path}")
-            upload_file(ssh, temp_config, remote_config_path)
-            logger.info("✓ Configuration uploaded")
+            # Create temp config file
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.properties', delete=False) as f:
+                f.write(common_props_content)
+                temp_config = f.name
+            
+            logger.info("Configuration generated successfully")
         except Exception as e:
-            import traceback
-            logger.error(f"Failed to upload config: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Failed to generate configuration: {e}")
             raise
-        finally:
-            # Clean up temp file
-            try:
-                if os.path.exists(temp_config):
-                    os.remove(temp_config)
-                    logger.debug(f"Cleaned up temp file: {temp_config}")
-            except Exception as e:
-                logger.warning(f"Failed to clean up temp file: {e}")
         
-        # Run installation script
-        logger.info("Running installation script...")
+        # DolphinScheduler 3.3.2+ uses binary distribution (no install script needed)
+        # Just copy to install path and configure
+        logger.info(f"Installing DolphinScheduler to {install_path}...")
+        
+        deploy_user = config['deployment']['user']
+        
         install_script = f"""
-        cd {extract_dir}
-        bash bin/install.sh
+        # Create install directory
+        sudo mkdir -p {install_path}
+        
+        # Copy files to install path
+        sudo cp -r {extract_dir}/* {install_path}/
+        
+        # Set ownership
+        sudo chown -R {deploy_user}:{deploy_user} {install_path}
+        
+        # Make scripts executable
+        sudo chmod +x {install_path}/bin/*.sh
+        
+        # Create necessary directories
+        sudo -u {deploy_user} mkdir -p {install_path}/logs
+        
+        # Verify installation
+        ls -la {install_path}
+        echo ""
+        echo "Installation completed to {install_path}"
         """
         
         output = execute_script(ssh, install_script, sudo=False)
         logger.info("Installation output:")
         logger.info(output)
+        
+        # Upload common.properties to each component
+        logger.info("Configuring components...")
+        components = ['master-server', 'worker-server', 'api-server', 'alert-server']
+        
+        for component in components:
+            try:
+                remote_config_path = f"{install_path}/{component}/conf/common.properties"
+                logger.info(f"Uploading configuration to {component}...")
+                upload_file(ssh, temp_config, remote_config_path)
+            except Exception as e:
+                logger.warning(f"Failed to upload config to {component}: {e}")
+        
+        # Clean up temp file
+        try:
+            if os.path.exists(temp_config):
+                os.remove(temp_config)
+        except Exception as e:
+            logger.warning(f"Failed to clean up temp file: {e}")
         
         logger.info("✓ DolphinScheduler deployed")
         return True
@@ -588,16 +661,16 @@ def start_services(config, username='ec2-user', key_file=None):
     logger.info("Starting DolphinScheduler services...")
     
     install_path = config['deployment']['install_path']
+    deploy_user = config['deployment']['user']
     
     # Start Master services
     logger.info("Starting Master services...")
     for i, node in enumerate(config['cluster']['master']['nodes']):
         ssh = connect_ssh(node['host'], username, key_file)
         try:
-            execute_remote_command(
-                ssh,
-                f"cd {install_path} && bash bin/dolphinscheduler-daemon.sh start master-server"
-            )
+            # For 3.3.2+, use the component-specific start script
+            start_cmd = f"cd {install_path}/master-server && sudo -u {deploy_user} bash bin/start.sh"
+            execute_remote_command(ssh, start_cmd)
             logger.info(f"✓ Master {i+1} started on {node['host']}")
             time.sleep(5)
         finally:
@@ -611,10 +684,8 @@ def start_services(config, username='ec2-user', key_file=None):
     for i, node in enumerate(config['cluster']['worker']['nodes']):
         ssh = connect_ssh(node['host'], username, key_file)
         try:
-            execute_remote_command(
-                ssh,
-                f"cd {install_path} && bash bin/dolphinscheduler-daemon.sh start worker-server"
-            )
+            start_cmd = f"cd {install_path}/worker-server && sudo -u {deploy_user} bash bin/start.sh"
+            execute_remote_command(ssh, start_cmd)
             logger.info(f"✓ Worker {i+1} started on {node['host']}")
             time.sleep(3)
         finally:
@@ -625,10 +696,8 @@ def start_services(config, username='ec2-user', key_file=None):
     for i, node in enumerate(config['cluster']['api']['nodes']):
         ssh = connect_ssh(node['host'], username, key_file)
         try:
-            execute_remote_command(
-                ssh,
-                f"cd {install_path} && bash bin/dolphinscheduler-daemon.sh start api-server"
-            )
+            start_cmd = f"cd {install_path}/api-server && sudo -u {deploy_user} bash bin/start.sh"
+            execute_remote_command(ssh, start_cmd)
             logger.info(f"✓ API {i+1} started on {node['host']}")
             time.sleep(3)
         finally:
@@ -639,10 +708,8 @@ def start_services(config, username='ec2-user', key_file=None):
     alert_node = config['cluster']['alert']['nodes'][0]
     ssh = connect_ssh(alert_node['host'], username, key_file)
     try:
-        execute_remote_command(
-            ssh,
-            f"cd {install_path} && bash bin/dolphinscheduler-daemon.sh start alert-server"
-        )
+        start_cmd = f"cd {install_path}/alert-server && sudo -u {deploy_user} bash bin/start.sh"
+        execute_remote_command(ssh, start_cmd)
         logger.info(f"✓ Alert started on {alert_node['host']}")
     finally:
         ssh.close()
