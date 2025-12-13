@@ -10,13 +10,28 @@ if [ -f /tmp/ds-cache/apache-dolphinscheduler-3.2.0-bin.tar.gz ]; then
     echo "✓ Removed"
 fi
 
-# 重新下载（使用国内镜像）
+# 重新下载（使用 Apache 官方源）
 echo ""
-echo "Downloading fresh package from Tsinghua mirror..."
+echo "Downloading fresh package from Apache archive..."
 mkdir -p /tmp/ds-cache
 
-wget -O /tmp/ds-cache/apache-dolphinscheduler-3.2.0-bin.tar.gz \
-    https://mirrors.tuna.tsinghua.edu.cn/apache/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
+# 尝试多个镜像源
+URLS=(
+    "https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz"
+    "https://dlcdn.apache.org/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz"
+    "https://repo.huaweicloud.com/apache/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz"
+)
+
+for url in "${URLS[@]}"; do
+    echo "Trying: $url"
+    if wget -O /tmp/ds-cache/apache-dolphinscheduler-3.2.0-bin.tar.gz "$url"; then
+        echo "✓ Download successful"
+        break
+    else
+        echo "✗ Failed, trying next mirror..."
+        rm -f /tmp/ds-cache/apache-dolphinscheduler-3.2.0-bin.tar.gz
+    fi
+done
 
 # 验证下载
 echo ""

@@ -51,11 +51,11 @@ def download_dolphinscheduler(version, cache_dir='/tmp/ds-cache', download_url=N
     if download_url:
         url = download_url
     else:
-        # Try mirrors first (faster in China)
+        # Try available mirrors
         mirrors = [
-            f"https://mirrors.tuna.tsinghua.edu.cn/apache/dolphinscheduler/{version}/{package_name}",
-            f"https://mirrors.aliyun.com/apache/dolphinscheduler/{version}/{package_name}",
-            f"https://archive.apache.org/dist/dolphinscheduler/{version}/{package_name}"
+            f"https://archive.apache.org/dist/dolphinscheduler/{version}/{package_name}",
+            f"https://dlcdn.apache.org/dolphinscheduler/{version}/{package_name}",
+            f"https://repo.huaweicloud.com/apache/dolphinscheduler/{version}/{package_name}"
         ]
         url = mirrors[0]
     
@@ -444,8 +444,8 @@ def deploy_dolphinscheduler(config, package_file=None, username='ec2-user', key_
             # Get download URL
             download_url = config.get('advanced', {}).get('download_url')
             if not download_url:
-                # Use mirror
-                download_url = f"https://mirrors.tuna.tsinghua.edu.cn/apache/dolphinscheduler/{version}/apache-dolphinscheduler-{version}-bin.tar.gz"
+                # Use Apache official archive
+                download_url = f"https://archive.apache.org/dist/dolphinscheduler/{version}/apache-dolphinscheduler-{version}-bin.tar.gz"
             
             logger.info(f"Download URL: {download_url}")
             

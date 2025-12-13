@@ -103,7 +103,7 @@ cluster:
 deployment:
   user: dolphinscheduler  # 必填：部署用户（需要 sudo 权限）
   install_path: /opt/dolphinscheduler  # 必填：安装路径
-  version: 3.2.0  # 必填：DolphinScheduler 版本
+  version: 3.3.2  # 必填：DolphinScheduler 版本（推荐使用 3.3.2）
   skip_system_update: true  # 跳过系统更新以加快部署（推荐）
   parallel_init_workers: 10  # 并行初始化的最大线程数
   download_on_remote: true  # 在目标节点直接下载（推荐，更快）
@@ -224,13 +224,13 @@ jvm:
 
 # ===== 其他配置（可选）=====
 advanced:
-  # 下载地址（可选国内镜像）
-  # 清华镜像（推荐）
-  download_url: https://mirrors.tuna.tsinghua.edu.cn/apache/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
-  # 阿里云镜像（备选）
-  # download_url: https://mirrors.aliyun.com/apache/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
-  # Apache 官方（国外）
-  # download_url: https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
+  # 下载地址
+  # 清华镜像（推荐，中国访问快）
+  download_url: https://mirrors.tuna.tsinghua.edu.cn/apache/dolphinscheduler/3.3.2/apache-dolphinscheduler-3.3.2-bin.tar.gz
+  # Apache 官方归档（备选）
+  # download_url: https://archive.apache.org/dist/dolphinscheduler/3.3.2/apache-dolphinscheduler-3.3.2-bin.tar.gz
+  # 华为云镜像（备选）
+  # download_url: https://repo.huaweicloud.com/apache/dolphinscheduler/3.3.2/apache-dolphinscheduler-3.3.2-bin.tar.gz
 
   # 日志配置
   logging:
