@@ -3,6 +3,7 @@ DolphinScheduler installation and deployment
 """
 import os
 import time
+import tempfile
 import urllib.request
 from pathlib import Path
 from src.deploy.ssh import connect_ssh, execute_remote_command, upload_file, execute_script
