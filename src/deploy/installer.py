@@ -133,7 +133,8 @@ def initialize_node(host, username='ec2-user', key_file=None):
             sudo dnf install -y --skip-broken \
                 mariadb105 \
                 psmisc tar gzip wget curl nc \
-                python3 python3-pip
+                python3 python3-pip \
+                sudo procps-ng
             
             # Verify Java installation
             echo "Verifying Java installation..."
@@ -207,9 +208,12 @@ def create_deployment_user(host, username='ec2-user', deploy_user='dolphinschedu
         # Create user
         sudo useradd -m -s /bin/bash {deploy_user}
         
-        # Add to sudoers
+        # Add to sudoers with proper permissions
         echo "{deploy_user} ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/{deploy_user}
         sudo chmod 0440 /etc/sudoers.d/{deploy_user}
+        
+        # Set up user environment
+        sudo -u {deploy_user} bash -c 'echo "export PATH=\\$PATH:/opt/dolphinscheduler/bin" >> ~/.bashrc'
         
         # Verify
         id {deploy_user}
@@ -900,13 +904,37 @@ mybatis-plus:
             logger.error(f"Failed to upload tools configuration: {e}")
             raise
         
-        # Check if database is already initialized
-        logger.info("Checking if database needs initialization...")
+        # Prepare database before initialization
+        logger.info("Preparing database for DolphinScheduler...")
         try:
             import pymysql
             # 确保密码是字符串类型，解决 PyMySQL 兼容性问题
             password = str(db_config['password']) if db_config['password'] is not None else ''
             
+            # Connect to MySQL server (without specifying database)
+            conn = pymysql.connect(
+                host=db_config['host'],
+                port=db_config.get('port', 3306),
+                user=db_config['username'],
+                password=password,
+                connect_timeout=10,
+                charset='utf8mb4'
+            )
+            cursor = conn.cursor()
+            
+            # Create database if not exists
+            database_name = db_config['database']
+            cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{database_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+            logger.info(f"✓ Database '{database_name}' ready")
+            
+            # Grant permissions (if needed)
+            cursor.execute(f"GRANT ALL PRIVILEGES ON `{database_name}`.* TO '{db_config['username']}'@'%'")
+            cursor.execute("FLUSH PRIVILEGES")
+            logger.info("✓ Database permissions configured")
+            
+            conn.close()
+            
+            # Now connect to the specific database to check initialization
             conn = pymysql.connect(
                 host=db_config['host'],
                 port=db_config.get('port', 3306),
@@ -914,7 +942,7 @@ mybatis-plus:
                 password=password,
                 database=db_config['database'],
                 connect_timeout=10,
-                charset='utf8mb4'  # 添加字符集支持
+                charset='utf8mb4'
             )
             cursor = conn.cursor()
             cursor.execute("SHOW TABLES LIKE 't_ds_version'")
