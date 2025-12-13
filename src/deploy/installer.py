@@ -893,13 +893,17 @@ mybatis-plus:
         logger.info("Checking if database needs initialization...")
         try:
             import pymysql
+            # 确保密码是字符串类型，解决 PyMySQL 兼容性问题
+            password = str(db_config['password']) if db_config['password'] is not None else ''
+            
             conn = pymysql.connect(
                 host=db_config['host'],
                 port=db_config.get('port', 3306),
                 user=db_config['username'],
-                password=db_config['password'],
+                password=password,
                 database=db_config['database'],
-                connect_timeout=10
+                connect_timeout=10,
+                charset='utf8mb4'  # 添加字符集支持
             )
             cursor = conn.cursor()
             cursor.execute("SHOW TABLES LIKE 't_ds_version'")
