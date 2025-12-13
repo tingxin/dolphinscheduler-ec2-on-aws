@@ -785,7 +785,6 @@ mybatis-plus:
         
         # Generate and upload application.yaml for each component
         logger.info("Configuring components...")
-        import tempfile
         
         component_map = {
             'master-server': 'master',
