@@ -339,19 +339,21 @@ EOF
     return True
 
 
-def generate_common_properties(config):
+def generate_application_yaml(config, component='master'):
     """
-    Generate common.properties for DolphinScheduler 3.3.2+
+    Generate application.yaml for DolphinScheduler 3.3.2+ component
     
     Args:
         config: Configuration dictionary
+        component: Component name (master, worker, api, alert)
     
     Returns:
-        Configuration content string
+        Configuration content string (YAML format)
     """
     db_config = config['database']
     registry_config = config['registry']
     storage_config = config['storage']
+    service_config = config.get('service_config', {}).get(component, {})
     
     # Build database URL
     db_url = f"jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?{db_config.get('params', 'useUnicode=true&characterEncoding=UTF-8')}"
@@ -359,26 +361,126 @@ def generate_common_properties(config):
     # Build Zookeeper connection string
     zk_connect = ','.join(registry_config['servers'])
     
-    common_properties = f"""# Database Configuration
-spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver
-spring.datasource.url={db_url}
-spring.datasource.username={db_config['username']}
-spring.datasource.password={db_config['password']}
-
-# Registry Configuration
-registry.type={registry_config['type']}
-registry.zookeeper.connect-string={zk_connect}
-registry.zookeeper.namespace={registry_config.get('namespace', 'dolphinscheduler')}
-
-# Resource Storage Configuration
-resource.storage.type={storage_config['type']}
-resource.storage.upload.base.path={storage_config.get('upload_path', '/dolphinscheduler')}
-resource.aws.region={storage_config['region']}
-resource.aws.s3.bucket.name={storage_config['bucket']}
-resource.aws.s3.endpoint={storage_config.get('endpoint', '')}
+    # Base configuration for all components
+    yaml_content = f"""spring:
+  profiles:
+    active: mysql
+  banner:
+    charset: UTF-8
+  jackson:
+    time-zone: UTC
+    date-format: "yyyy-MM-dd HH:mm:ss"
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: {db_url}
+    username: {db_config['username']}
+    password: {db_config['password']}
+    hikari:
+      connection-test-query: select 1
+      pool-name: DolphinScheduler
 """
     
-    return common_properties
+    # Add Quartz configuration for master
+    if component == 'master':
+        yaml_content += """  quartz:
+    job-store-type: jdbc
+    jdbc:
+      initialize-schema: never
+    properties:
+      org.quartz.threadPool.threadPriority: 5
+      org.quartz.jobStore.isClustered: true
+      org.quartz.jobStore.class: org.springframework.scheduling.quartz.LocalDataSourceJobStore
+      org.quartz.scheduler.instanceId: AUTO
+      org.quartz.jobStore.tablePrefix: QRTZ_
+      org.quartz.jobStore.acquireTriggersWithinLock: true
+      org.quartz.scheduler.instanceName: DolphinScheduler
+      org.quartz.threadPool.class: org.quartz.simpl.SimpleThreadPool
+      org.quartz.jobStore.useProperties: false
+      org.quartz.threadPool.makeThreadsDaemons: true
+      org.quartz.threadPool.threadCount: 25
+      org.quartz.jobStore.misfireThreshold: 60000
+      org.quartz.scheduler.batchTriggerAcquisitionMaxCount: 25
+      org.quartz.scheduler.makeSchedulerThreadDaemon: true
+      org.quartz.jobStore.driverDelegateClass: org.quartz.impl.jdbcjobstore.StdJDBCDelegate
+      org.quartz.jobStore.clusterCheckinInterval: 5000
+"""
+    
+    # Add registry configuration
+    yaml_content += f"""
+registry:
+  type: {registry_config['type']}
+  zookeeper:
+    namespace: {registry_config.get('namespace', 'dolphinscheduler')}
+    connect-string: {zk_connect}
+    retry-policy:
+      base-sleep-time: {registry_config.get('retry', {}).get('base_sleep_time', 1000)}ms
+      max-sleep: {registry_config.get('retry', {}).get('max_sleep_time', 3000)}ms
+      max-retries: {registry_config.get('retry', {}).get('max_retries', 5)}
+    session-timeout: {registry_config.get('session_timeout', 60000)}ms
+    connection-timeout: {registry_config.get('connection_timeout', 30000)}ms
+"""
+    
+    # Add component-specific configuration
+    if component == 'master':
+        listen_port = service_config.get('listen_port', 5678)
+        yaml_content += f"""
+master:
+  listen-port: {listen_port}
+  max-heartbeat-interval: 10s
+  server-load-protection:
+    enabled: true
+    max-system-cpu-usage-percentage-thresholds: 0.8
+    max-jvm-cpu-usage-percentage-thresholds: 0.8
+    max-system-memory-usage-percentage-thresholds: 0.8
+    max-disk-usage-percentage-thresholds: 0.8
+
+server:
+  port: {listen_port + 1}
+"""
+    
+    elif component == 'worker':
+        listen_port = service_config.get('listen_port', 1234)
+        exec_threads = service_config.get('exec_threads', 100)
+        yaml_content += f"""
+worker:
+  listen-port: {listen_port}
+  exec-threads: {exec_threads}
+  max-heartbeat-interval: 10s
+  server-load-protection:
+    enabled: true
+    max-system-cpu-usage-percentage-thresholds: 0.8
+    max-jvm-cpu-usage-percentage-thresholds: 0.8
+    max-system-memory-usage-percentage-thresholds: 0.8
+    max-disk-usage-percentage-thresholds: 0.8
+
+server:
+  port: {listen_port + 1}
+"""
+    
+    elif component == 'api':
+        api_port = service_config.get('port', 12345)
+        yaml_content += f"""
+server:
+  port: {api_port}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+"""
+    
+    elif component == 'alert':
+        alert_port = service_config.get('port', 50052)
+        yaml_content += f"""
+server:
+  port: {alert_port}
+
+alert:
+  wait-timeout: {service_config.get('wait_timeout', 5000)}
+"""
+    
+    return yaml_content
 
 
 def generate_install_config(config):
@@ -552,41 +654,8 @@ def deploy_dolphinscheduler(config, package_file=None, username='ec2-user', key_
         execute_remote_command(ssh, f"mkdir -p {extract_dir}")
         execute_remote_command(ssh, f"tar -xzf {remote_package} -C {extract_dir} --strip-components=1")
         
-        # Generate install config
-        logger.info("Generating installation configuration...")
-        try:
-            install_config_content = generate_install_config(config)
-            logger.debug(f"Generated config content length: {len(install_config_content)}")
-        except Exception as e:
-            logger.error(f"Failed to generate install config: {e}")
-            raise
-        
-        # Create temp config file locally
-        import tempfile
-        try:
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as f:
-                f.write(install_config_content)
-                temp_config = f.name
-            logger.debug(f"Created temp config file: {temp_config}")
-        except Exception as e:
-            logger.error(f"Failed to create temp config file: {e}")
-            raise
-        
-        # Generate common.properties for DolphinScheduler 3.3.2+
-        logger.info("Generating common.properties configuration...")
-        try:
-            common_props_content = generate_common_properties(config)
-            
-            # Create temp config file
-            import tempfile
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.properties', delete=False) as f:
-                f.write(common_props_content)
-                temp_config = f.name
-            
-            logger.info("Configuration generated successfully")
-        except Exception as e:
-            logger.error(f"Failed to generate configuration: {e}")
-            raise
+        # No need to generate install_config.conf for 3.3.2 (binary distribution)
+        logger.info("Preparing configuration files for DolphinScheduler 3.3.2...")
         
         # DolphinScheduler 3.3.2+ uses binary distribution (no install script needed)
         # Just copy to install path and configure
@@ -620,22 +689,132 @@ def deploy_dolphinscheduler(config, package_file=None, username='ec2-user', key_
         logger.info("Installation output:")
         logger.info(output)
         
-        # Upload common.properties to each component
+        # Generate and upload application.yaml for each component
         logger.info("Configuring components...")
-        components = ['master-server', 'worker-server', 'api-server', 'alert-server']
+        import tempfile
         
-        for component in components:
+        component_map = {
+            'master-server': 'master',
+            'worker-server': 'worker',
+            'api-server': 'api',
+            'alert-server': 'alert'
+        }
+        
+        for component_dir, component_name in component_map.items():
             try:
-                remote_config_path = f"{install_path}/{component}/conf/common.properties"
-                logger.info(f"Uploading configuration to {component}...")
-                upload_file(ssh, temp_config, remote_config_path)
+                logger.info(f"Generating application.yaml for {component_name}...")
+                yaml_content = generate_application_yaml(config, component_name)
+                
+                # Create temp file
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+                    f.write(yaml_content)
+                    temp_yaml = f.name
+                
+                # Upload to component
+                remote_config_path = f"{install_path}/{component_dir}/conf/application.yaml"
+                logger.info(f"Uploading application.yaml to {component_dir}...")
+                upload_file(ssh, temp_yaml, remote_config_path)
+                
+                # Clean up temp file
+                os.remove(temp_yaml)
+                logger.info(f"✓ {component_name} configured")
+                
             except Exception as e:
-                logger.warning(f"Failed to upload config to {component}: {e}")
+                logger.error(f"Failed to configure {component_name}: {e}")
+                raise
+        
+        # Configure dolphinscheduler_env.sh with JAVA_HOME
+        logger.info("Configuring dolphinscheduler_env.sh...")
+        
+        # Detect JAVA_HOME on remote node
+        detect_java_script = """
+        # Try to find Java installation
+        if [ -n "$JAVA_HOME" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+            echo "$JAVA_HOME"
+        elif [ -x /usr/lib/jvm/java-1.8.0-amazon-corretto/bin/java ]; then
+            echo "/usr/lib/jvm/java-1.8.0-amazon-corretto"
+        elif [ -x /usr/lib/jvm/java-1.8.0/bin/java ]; then
+            echo "/usr/lib/jvm/java-1.8.0"
+        elif [ -x /usr/lib/jvm/java-8-openjdk-amd64/bin/java ]; then
+            echo "/usr/lib/jvm/java-8-openjdk-amd64"
+        else
+            # Try to find using alternatives
+            java_path=$(readlink -f $(which java) 2>/dev/null || echo "")
+            if [ -n "$java_path" ]; then
+                # Remove /bin/java from path
+                echo "${java_path%/bin/java}"
+            else
+                echo "NOT_FOUND"
+            fi
+        fi
+        """
+        
+        java_home = execute_script(ssh, detect_java_script, sudo=False).strip()
+        
+        if java_home == "NOT_FOUND" or not java_home:
+            raise Exception("Could not detect JAVA_HOME on remote node")
+        
+        logger.info(f"Detected JAVA_HOME: {java_home}")
+        
+        # Generate dolphinscheduler_env.sh content
+        env_sh_content = f"""#!/bin/bash
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+# JAVA_HOME configuration
+export JAVA_HOME={java_home}
+
+# DolphinScheduler home
+export DOLPHINSCHEDULER_HOME={install_path}
+
+# Never put sensitive config such as database password here in your production environment,
+# this file will be sourced everytime a new task is executed.
+"""
+        
+        # Create temp env file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+            f.write(env_sh_content)
+            temp_env_file = f.name
+        
+        # Upload dolphinscheduler_env.sh to bin/env/ (main location)
+        try:
+            remote_env_path = f"{install_path}/bin/env/dolphinscheduler_env.sh"
+            logger.info(f"Uploading dolphinscheduler_env.sh to bin/env/...")
+            upload_file(ssh, temp_env_file, remote_env_path)
+            execute_remote_command(ssh, f"chmod +x {remote_env_path}")
+            logger.info(f"✓ Main dolphinscheduler_env.sh configured")
+        except Exception as e:
+            logger.error(f"Failed to upload main env config: {e}")
+            raise
+        
+        # Create symlinks in each component's conf directory
+        for component_dir in component_map.keys():
+            try:
+                remote_link_path = f"{install_path}/{component_dir}/conf/dolphinscheduler_env.sh"
+                logger.info(f"Creating symlink for {component_dir}...")
+                execute_remote_command(ssh, f"ln -sf {install_path}/bin/env/dolphinscheduler_env.sh {remote_link_path}")
+                logger.info(f"✓ {component_dir} env symlink created")
+            except Exception as e:
+                logger.warning(f"Failed to create symlink for {component_dir}: {e}")
         
         # Clean up temp file
         try:
-            if os.path.exists(temp_config):
-                os.remove(temp_config)
+            if os.path.exists(temp_env_file):
+                os.remove(temp_env_file)
         except Exception as e:
             logger.warning(f"Failed to clean up temp file: {e}")
         
@@ -668,15 +847,20 @@ def start_services(config, username='ec2-user', key_file=None):
     for i, node in enumerate(config['cluster']['master']['nodes']):
         ssh = connect_ssh(node['host'], username, key_file)
         try:
-            # For 3.3.2+, use the component-specific start script
-            start_cmd = f"cd {install_path}/master-server && sudo -u {deploy_user} bash bin/start.sh"
-            execute_remote_command(ssh, start_cmd)
+            # For 3.3.2, use dolphinscheduler-daemon.sh from main bin directory
+            start_cmd = f"cd {install_path} && sudo -u {deploy_user} bash bin/dolphinscheduler-daemon.sh start master-server"
+            output = execute_remote_command(ssh, start_cmd)
+            logger.debug(f"Master start output: {output}")
             logger.info(f"✓ Master {i+1} started on {node['host']}")
             time.sleep(5)
+        except Exception as e:
+            logger.error(f"Failed to start Master on {node['host']}: {e}")
+            raise
         finally:
             ssh.close()
     
     # Wait for Masters to be ready
+    logger.info("Waiting for Masters to initialize...")
     time.sleep(10)
     
     # Start Worker services
@@ -684,10 +868,14 @@ def start_services(config, username='ec2-user', key_file=None):
     for i, node in enumerate(config['cluster']['worker']['nodes']):
         ssh = connect_ssh(node['host'], username, key_file)
         try:
-            start_cmd = f"cd {install_path}/worker-server && sudo -u {deploy_user} bash bin/start.sh"
-            execute_remote_command(ssh, start_cmd)
+            start_cmd = f"cd {install_path} && sudo -u {deploy_user} bash bin/dolphinscheduler-daemon.sh start worker-server"
+            output = execute_remote_command(ssh, start_cmd)
+            logger.debug(f"Worker start output: {output}")
             logger.info(f"✓ Worker {i+1} started on {node['host']}")
             time.sleep(3)
+        except Exception as e:
+            logger.error(f"Failed to start Worker on {node['host']}: {e}")
+            raise
         finally:
             ssh.close()
     
@@ -696,10 +884,14 @@ def start_services(config, username='ec2-user', key_file=None):
     for i, node in enumerate(config['cluster']['api']['nodes']):
         ssh = connect_ssh(node['host'], username, key_file)
         try:
-            start_cmd = f"cd {install_path}/api-server && sudo -u {deploy_user} bash bin/start.sh"
-            execute_remote_command(ssh, start_cmd)
+            start_cmd = f"cd {install_path} && sudo -u {deploy_user} bash bin/dolphinscheduler-daemon.sh start api-server"
+            output = execute_remote_command(ssh, start_cmd)
+            logger.debug(f"API start output: {output}")
             logger.info(f"✓ API {i+1} started on {node['host']}")
             time.sleep(3)
+        except Exception as e:
+            logger.error(f"Failed to start API on {node['host']}: {e}")
+            raise
         finally:
             ssh.close()
     
@@ -708,13 +900,20 @@ def start_services(config, username='ec2-user', key_file=None):
     alert_node = config['cluster']['alert']['nodes'][0]
     ssh = connect_ssh(alert_node['host'], username, key_file)
     try:
-        start_cmd = f"cd {install_path}/alert-server && sudo -u {deploy_user} bash bin/start.sh"
-        execute_remote_command(ssh, start_cmd)
+        start_cmd = f"cd {install_path} && sudo -u {deploy_user} bash bin/dolphinscheduler-daemon.sh start alert-server"
+        output = execute_remote_command(ssh, start_cmd)
+        logger.debug(f"Alert start output: {output}")
         logger.info(f"✓ Alert started on {alert_node['host']}")
+    except Exception as e:
+        logger.error(f"Failed to start Alert on {alert_node['host']}: {e}")
+        raise
     finally:
         ssh.close()
     
     logger.info("✓ All services started")
+    logger.info("Waiting for services to fully initialize (30 seconds)...")
+    time.sleep(30)
+    
     return True
 
 
