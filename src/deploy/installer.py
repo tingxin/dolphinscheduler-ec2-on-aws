@@ -122,16 +122,27 @@ def initialize_node(host, username='ec2-user', key_file=None):
             # Skip system update for faster deployment
             # sudo dnf update -y
             
-            # Install all packages in one command (faster)
+            # Install Java first (Amazon Linux 2023 uses different package names)
+            echo "Installing Java..."
+            sudo dnf install -y java-1.8.0-amazon-corretto java-1.8.0-amazon-corretto-devel || \
+            sudo dnf install -y java-11-amazon-corretto java-11-amazon-corretto-devel || \
+            sudo dnf install -y java-17-amazon-corretto java-17-amazon-corretto-devel
+            
+            # Install other packages
+            echo "Installing other dependencies..."
             sudo dnf install -y --skip-broken \
-                java-1.8.0-amazon-corretto \
-                java-1.8.0-amazon-corretto-devel \
                 mariadb105 \
                 psmisc tar gzip wget curl nc \
                 python3 python3-pip
             
-            # Verify installations
-            java -version 2>&1 | head -1
+            # Verify Java installation
+            echo "Verifying Java installation..."
+            java -version 2>&1 | head -3
+            which java
+            echo "JAVA_HOME candidates:"
+            ls -la /usr/lib/jvm/ 2>/dev/null || echo "No /usr/lib/jvm directory"
+            
+            # Verify MySQL client
             mysql --version 2>&1 | head -1
             """
         elif is_ubuntu:
