@@ -58,3 +58,8 @@ temp/
 *.tmp
 
 dolphinscheduler
+.env.example
+config copy.yaml
+deploy_and_test.sh
+SESSION_SUMMARY.txt
+setup_bastion.sh
