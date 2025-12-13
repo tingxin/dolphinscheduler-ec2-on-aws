@@ -11,7 +11,7 @@ BASTION_HOST="43.192.117.205"
 BASTION_USER="ec2-user"
 REMOTE_PROJECT_DIR="/home/ec2-user/dolphinscheduler-ec2-on-aws"
 CONFIG_FILE="config.yaml"
-GITHUB_BRANCH="main"
+GITHUB_BRANCH="3.3.2"
 MAX_RETRY_ATTEMPTS=5
 
 # 颜色定义
@@ -71,7 +71,7 @@ pull_code() {
         echo "拉取前提交: $(git rev-parse --short HEAD)"
         
         git fetch origin
-        git reset --hard origin/main
+        git reset --hard origin/3.3.2
         
         echo "拉取后提交: $(git rev-parse --short HEAD)"
         echo "最新提交信息: $(git log -1 --oneline)"
