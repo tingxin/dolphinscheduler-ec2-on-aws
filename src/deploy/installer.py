@@ -696,33 +696,103 @@ def deploy_dolphinscheduler(config, package_file=None, username='ec2-user', key_
         # ========================================================================
         logger.info("Configuring dolphinscheduler_env.sh (required for database initialization)...")
         
-        # Detect JAVA_HOME on remote node
+        # Detect JAVA_HOME on remote node with comprehensive search
         detect_java_script = """
-        # Try to find Java installation
-        if [ -n "$JAVA_HOME" ] && [ -x "$JAVA_HOME/bin/java" ]; then
-            echo "$JAVA_HOME"
-        elif [ -x /usr/lib/jvm/java-1.8.0-amazon-corretto/bin/java ]; then
-            echo "/usr/lib/jvm/java-1.8.0-amazon-corretto"
-        elif [ -x /usr/lib/jvm/java-1.8.0/bin/java ]; then
-            echo "/usr/lib/jvm/java-1.8.0"
-        elif [ -x /usr/lib/jvm/java-8-openjdk-amd64/bin/java ]; then
-            echo "/usr/lib/jvm/java-8-openjdk-amd64"
-        else
-            # Try to find using alternatives
-            java_path=$(readlink -f $(which java) 2>/dev/null || echo "")
-            if [ -n "$java_path" ]; then
-                # Remove /bin/java from path
-                echo "${java_path%/bin/java}"
-            else
-                echo "NOT_FOUND"
+        set -e
+        
+        # Function to check if java is executable
+        check_java() {
+            if [ -x "$1/bin/java" ]; then
+                echo "$1"
+                return 0
+            fi
+            return 1
+        }
+        
+        # Try existing JAVA_HOME
+        if [ -n "$JAVA_HOME" ] && check_java "$JAVA_HOME"; then
+            exit 0
+        fi
+        
+        # Try common Amazon Linux paths
+        for path in \
+            /usr/lib/jvm/java-1.8.0-amazon-corretto \
+            /usr/lib/jvm/java-1.8.0-amazon-corretto.x86_64 \
+            /usr/lib/jvm/java-11-amazon-corretto \
+            /usr/lib/jvm/jre-1.8.0-amazon-corretto \
+            /usr/lib/jvm/java-1.8.0 \
+            /usr/lib/jvm/jre-1.8.0 \
+            /usr/lib/jvm/java-8-openjdk-amd64 \
+            /usr/lib/jvm/java-8-openjdk \
+            /usr/lib/jvm/jre-openjdk \
+            /usr/java/latest \
+            /usr/java/default; do
+            if check_java "$path"; then
+                exit 0
+            fi
+        done
+        
+        # Try to find using 'which java' and follow symlinks
+        if command -v java >/dev/null 2>&1; then
+            java_bin=$(which java 2>/dev/null)
+            if [ -n "$java_bin" ]; then
+                # Follow all symlinks
+                while [ -L "$java_bin" ]; do
+                    java_bin=$(readlink -f "$java_bin" 2>/dev/null || readlink "$java_bin" 2>/dev/null)
+                done
+                # Get directory (remove /bin/java or /jre/bin/java)
+                java_home="${java_bin%/bin/java}"
+                # If path contains /jre/bin, go up one more level
+                if [[ "$java_home" == */jre ]]; then
+                    java_home="${java_home%/jre}"
+                fi
+                if check_java "$java_home"; then
+                    exit 0
+                fi
             fi
         fi
+        
+        # Try alternatives system
+        if command -v alternatives >/dev/null 2>&1; then
+            java_alt=$(alternatives --display java 2>/dev/null | grep 'link currently points to' | awk '{print $NF}')
+            if [ -n "$java_alt" ]; then
+                java_home="${java_alt%/bin/java}"
+                if [[ "$java_home" == */jre ]]; then
+                    java_home="${java_home%/jre}"
+                fi
+                if check_java "$java_home"; then
+                    exit 0
+                fi
+            fi
+        fi
+        
+        # Last resort: search in /usr/lib/jvm
+        if [ -d /usr/lib/jvm ]; then
+            for dir in /usr/lib/jvm/*; do
+                if [ -d "$dir" ] && check_java "$dir"; then
+                    exit 0
+                fi
+            done
+        fi
+        
+        echo "NOT_FOUND"
         """
         
         java_home = execute_script(ssh, detect_java_script, sudo=False).strip()
         
         if java_home == "NOT_FOUND" or not java_home:
-            raise Exception("Could not detect JAVA_HOME on remote node")
+            # Log more details for debugging
+            logger.error("Failed to detect JAVA_HOME. Checking Java installation...")
+            try:
+                java_check = execute_remote_command(ssh, "java -version 2>&1 || echo 'Java not found'")
+                logger.error(f"Java version check: {java_check}")
+                which_java = execute_remote_command(ssh, "which java 2>&1 || echo 'which failed'")
+                logger.error(f"Which java: {which_java}")
+                jvm_list = execute_remote_command(ssh, "ls -la /usr/lib/jvm/ 2>&1 || echo 'No /usr/lib/jvm'")
+                logger.error(f"JVM directory: {jvm_list}")
+            except:
+                pass
+            raise Exception("Could not detect JAVA_HOME on remote node. Java may not be installed correctly.")
         
         logger.info(f"Detected JAVA_HOME: {java_home}")
         
