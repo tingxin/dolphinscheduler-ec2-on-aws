@@ -287,22 +287,53 @@ def create_cluster(config):
         # Verify services
         logger.info("\nVerifying services...")
         
-        # Check Master
-        for node in config['cluster']['master']['nodes']:
-            if wait_for_service_ready(node['host'], 5678, max_retries=10):
-                logger.info(f"✓ Master service ready on {node['host']}")
+        # Get service ports from config
+        master_port = config.get('service_config', {}).get('master', {}).get('listen_port', 5678)
+        worker_port = config.get('service_config', {}).get('worker', {}).get('listen_port', 1234)
+        api_port = config.get('service_config', {}).get('api', {}).get('port', 12345)
         
-        # Check Worker
-        for node in config['cluster']['worker']['nodes']:
-            if wait_for_service_ready(node['host'], 1234, max_retries=10):
-                logger.info(f"✓ Worker service ready on {node['host']}")
+        # Check Master services
+        logger.info("Verifying Master services...")
+        for i, node in enumerate(config['cluster']['master']['nodes']):
+            if wait_for_service_ready(node['host'], master_port, max_retries=15, retry_interval=10):
+                logger.info(f"✓ Master {i+1} service ready on {node['host']}:{master_port}")
+            else:
+                logger.warning(f"⚠ Master {i+1} service not responding on {node['host']}:{master_port}")
         
-        # Check API
-        for node in config['cluster']['api']['nodes']:
-            if wait_for_service_ready(node['host'], 12345, max_retries=10):
-                logger.info(f"✓ API service ready on {node['host']}")
+        # Check Worker services
+        logger.info("Verifying Worker services...")
+        for i, node in enumerate(config['cluster']['worker']['nodes']):
+            if wait_for_service_ready(node['host'], worker_port, max_retries=15, retry_interval=10):
+                logger.info(f"✓ Worker {i+1} service ready on {node['host']}:{worker_port}")
+            else:
+                logger.warning(f"⚠ Worker {i+1} service not responding on {node['host']}:{worker_port}")
         
-        logger.info("✓ All services started and verified")
+        # Check API services
+        logger.info("Verifying API services...")
+        for i, node in enumerate(config['cluster']['api']['nodes']):
+            if wait_for_service_ready(node['host'], api_port, max_retries=15, retry_interval=10):
+                logger.info(f"✓ API {i+1} service ready on {node['host']}:{api_port}")
+            else:
+                logger.warning(f"⚠ API {i+1} service not responding on {node['host']}:{api_port}")
+        
+        # Final health check
+        logger.info("Performing final health check...")
+        time.sleep(30)  # Wait for services to fully initialize
+        
+        # Try to access API health endpoint
+        try:
+            import requests
+            api_node = config['cluster']['api']['nodes'][0]
+            health_url = f"http://{api_node['host']}:{api_port}/dolphinscheduler/actuator/health"
+            response = requests.get(health_url, timeout=10)
+            if response.status_code == 200:
+                logger.info("✓ API health check passed")
+            else:
+                logger.warning(f"⚠ API health check returned status {response.status_code}")
+        except Exception as e:
+            logger.warning(f"⚠ Could not perform API health check: {e}")
+        
+        logger.info("✓ Service verification completed")
         
         # Success
         return {
@@ -355,11 +386,54 @@ def rollback_deployment(config, state):
     from src.aws.ec2 import terminate_instances
     
     logger.info("Rolling back deployment...")
+    rollback_errors = []
     
-    # Terminate created instances
-    if state.created_instances:
-        instance_ids = [inst.id for inst in state.created_instances]
-        logger.info(f"Terminating {len(instance_ids)} instances...")
-        terminate_instances(config, instance_ids)
+    try:
+        # Stop any running services first
+        if state.initialized_nodes:
+            logger.info("Stopping services on initialized nodes...")
+            try:
+                from src.deploy.installer import stop_services
+                stop_services(config)
+            except Exception as e:
+                rollback_errors.append(f"Failed to stop services: {e}")
+                logger.warning(f"Could not stop services during rollback: {e}")
+    except Exception as e:
+        rollback_errors.append(f"Service cleanup error: {e}")
     
-    logger.info("✓ Rollback completed")
+    try:
+        # Terminate created instances
+        if state.created_instances:
+            instance_ids = [inst.id for inst in state.created_instances]
+            logger.info(f"Terminating {len(instance_ids)} instances...")
+            terminate_instances(config, instance_ids)
+            
+            # Wait a bit for termination to start
+            import time
+            time.sleep(10)
+    except Exception as e:
+        rollback_errors.append(f"Failed to terminate instances: {e}")
+        logger.error(f"Instance termination failed: {e}")
+    
+    try:
+        # Clean up any ALB resources if they were created
+        # (This would need to be implemented based on your ALB creation logic)
+        logger.info("Checking for ALB resources to clean up...")
+        # TODO: Add ALB cleanup logic here
+    except Exception as e:
+        rollback_errors.append(f"ALB cleanup error: {e}")
+    
+    if rollback_errors:
+        logger.warning("Rollback completed with some errors:")
+        for error in rollback_errors:
+            logger.warning(f"  - {error}")
+        logger.warning("You may need to manually clean up some resources in AWS console")
+    else:
+        logger.info("✓ Rollback completed successfully")
+    
+    # Clear the config nodes to prevent confusion
+    try:
+        for component in ['master', 'worker', 'api', 'alert']:
+            config['cluster'][component]['nodes'] = []
+    except Exception as e:
+        logger.warning(f"Could not clear config nodes: {e}")

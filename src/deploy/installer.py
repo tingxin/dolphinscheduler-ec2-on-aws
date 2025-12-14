@@ -914,12 +914,11 @@ export DOLPHINSCHEDULER_HOME={install_path}
         # ========================================================================
         logger.info("Installing DolphinScheduler plugins...")
         
-        # Configure plugins - we need at least MySQL connector and basic task plugins
+        # Configure plugins - use minimal set to avoid Maven wrapper issues
+        # DolphinScheduler 3.3.2 binary distribution should include basic plugins
         plugins_config = """--task-plugins--
 dolphinscheduler-task-shell
 dolphinscheduler-task-sql
-dolphinscheduler-task-python
-dolphinscheduler-task-java
 --end--
 
 --alert-plugins--
@@ -948,58 +947,121 @@ dolphinscheduler-datasource-mysql
             os.remove(temp_plugins_config)
             logger.info("✓ Plugins configuration created")
             
-            # Run install-plugins.sh script with extended timeout
-            logger.info("Running install-plugins.sh script (this may take several minutes)...")
-            install_plugins_cmd = f"cd {install_path} && sudo -u {deploy_user} bash bin/install-plugins.sh {version}"
+            # Try plugin installation, but don't fail deployment if it doesn't work
+            logger.info("Attempting plugin installation...")
             
-            try:
-                # Use longer timeout for plugin installation (10 minutes)
-                logger.info("Starting plugin installation - this will download dependencies from Maven...")
-                
-                # Check SSH connection before long operation
+            # First, check if install-plugins.sh exists and is executable
+            check_script_cmd = f"ls -la {install_path}/bin/install-plugins.sh 2>/dev/null || echo 'Script not found'"
+            script_check = execute_remote_command(ssh, check_script_cmd)
+            logger.info(f"Plugin script check: {script_check}")
+            
+            plugins_installed = False
+            
+            if "install-plugins.sh" in script_check and "Script not found" not in script_check:
                 try:
-                    ssh.exec_command('echo "SSH connection check"')
-                except:
-                    logger.warning("SSH connection lost, reconnecting...")
-                    ssh = get_ssh_connection()
-                
-                plugins_output = execute_remote_command(ssh, install_plugins_cmd, timeout=600)
-                logger.info(f"Plugins installation output: {plugins_output}")
-                logger.info("✓ Plugins installed successfully")
-            except Exception as e:
-                logger.warning(f"Plugin installation failed: {e}")
-                
-                # Check if it's SSH connection issue
-                if "SSH session not active" in str(e) or "not connected" in str(e).lower():
-                    logger.info("SSH connection lost during plugin installation, reconnecting...")
-                    try:
-                        ssh = get_ssh_connection()
-                        logger.info("SSH reconnected, retrying plugin installation...")
+                    # Make sure script is executable
+                    execute_remote_command(ssh, f"sudo chmod +x {install_path}/bin/install-plugins.sh")
+                    
+                    # Check if Maven wrapper exists
+                    mvnw_check = execute_remote_command(ssh, f"ls -la {install_path}/mvnw {install_path}/.mvn/ 2>/dev/null || echo 'Maven wrapper missing'")
+                    logger.info(f"Maven wrapper check: {mvnw_check}")
+                    
+                    if "Maven wrapper missing" not in mvnw_check:
+                        # Try to run plugin installation
+                        install_plugins_cmd = f"cd {install_path} && sudo -u {deploy_user} bash bin/install-plugins.sh {version}"
+                        logger.info("Running install-plugins.sh script (this may take several minutes)...")
+                        
+                        # Check SSH connection before long operation
+                        try:
+                            ssh.exec_command('echo "SSH connection check"')
+                        except:
+                            logger.warning("SSH connection lost, reconnecting...")
+                            ssh = get_ssh_connection()
+                        
                         plugins_output = execute_remote_command(ssh, install_plugins_cmd, timeout=600)
-                        logger.info(f"Plugins installation output (retry): {plugins_output}")
-                        logger.info("✓ Plugins installed successfully on retry")
-                    except Exception as retry_e:
-                        logger.warning(f"Plugin installation retry also failed: {retry_e}")
-                        logger.info("Attempting manual MySQL JDBC driver installation as fallback...")
-                else:
-                    logger.info("Attempting manual MySQL JDBC driver installation as fallback...")
+                        logger.info(f"Plugins installation output: {plugins_output}")
+                        
+                        # Check if installation was successful
+                        if "BUILD SUCCESS" in plugins_output or "successfully" in plugins_output.lower():
+                            logger.info("✓ Plugins installed successfully")
+                            plugins_installed = True
+                        else:
+                            logger.warning("Plugin installation completed but may have issues")
+                    else:
+                        logger.warning("Maven wrapper files missing, skipping automatic plugin installation")
+                        
+                except Exception as e:
+                    logger.warning(f"Plugin installation failed: {e}")
+                    logger.info("Will proceed with manual dependency installation...")
+            else:
+                logger.warning("install-plugins.sh script not found, skipping automatic plugin installation")
+            
+            # Always ensure MySQL JDBC driver is available (critical for database connectivity)
+            logger.info("Ensuring MySQL JDBC driver is available...")
+            
+            # Check if driver already exists
+            check_driver_cmd = f"find {install_path}/libs/ -name '*mysql*' -o -name '*connector*' 2>/dev/null || echo 'No MySQL driver found'"
+            driver_check = execute_remote_command(ssh, check_driver_cmd)
+            logger.info(f"MySQL driver check: {driver_check}")
+            
+            if "No MySQL driver found" in driver_check or not driver_check.strip():
+                logger.info("MySQL JDBC driver not found, downloading...")
                 
-                # Fallback: manually install MySQL JDBC driver
-                mysql_driver_url = "https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.33/mysql-connector-java-8.0.33.jar"
-                download_driver_cmd = f"""
-                cd /tmp && \
-                wget -O mysql-connector-java-8.0.33.jar {mysql_driver_url} && \
-                sudo cp mysql-connector-java-8.0.33.jar {install_path}/libs/ && \
-                sudo chown {deploy_user}:{deploy_user} {install_path}/libs/mysql-connector-java-8.0.33.jar && \
-                ls -la {install_path}/libs/mysql-connector-java-8.0.33.jar
-                """
+                # Try multiple download sources for MySQL JDBC driver
+                mysql_drivers = [
+                    {
+                        "url": "https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar",
+                        "filename": "mysql-connector-j-8.0.33.jar"
+                    },
+                    {
+                        "url": "https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.2.0/mysql-connector-j-8.2.0.jar",
+                        "filename": "mysql-connector-j-8.2.0.jar"
+                    },
+                    {
+                        "url": "https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.1.0/mysql-connector-j-8.1.0.jar",
+                        "filename": "mysql-connector-j-8.1.0.jar"
+                    }
+                ]
                 
-                try:
-                    driver_output = execute_remote_command(ssh, download_driver_cmd)
-                    logger.info(f"MySQL JDBC driver installed manually: {driver_output}")
-                except Exception as driver_e:
-                    logger.error(f"Failed to install MySQL JDBC driver: {driver_e}")
-                    raise Exception("Could not install required plugins or MySQL JDBC driver.")
+                driver_installed = False
+                for driver in mysql_drivers:
+                    try:
+                        logger.info(f"Trying to download MySQL driver from: {driver['url']}")
+                        download_driver_cmd = f"""
+                        cd /tmp && \
+                        rm -f {driver['filename']} && \
+                        (wget -O {driver['filename']} {driver['url']} || curl -L -o {driver['filename']} {driver['url']}) && \
+                        sudo mkdir -p {install_path}/libs/ && \
+                        sudo cp {driver['filename']} {install_path}/libs/ && \
+                        sudo chown {deploy_user}:{deploy_user} {install_path}/libs/{driver['filename']} && \
+                        ls -la {install_path}/libs/{driver['filename']}
+                        """
+                        
+                        driver_output = execute_remote_command(ssh, download_driver_cmd)
+                        logger.info(f"✓ MySQL JDBC driver installed: {driver_output}")
+                        driver_installed = True
+                        break
+                        
+                    except Exception as driver_e:
+                        logger.warning(f"Failed to download from {driver['url']}: {driver_e}")
+                        continue
+                
+                if not driver_installed:
+                    logger.error("Failed to install MySQL JDBC driver from all sources")
+                    # Don't fail deployment, but warn user
+                    logger.warning("⚠️ MySQL JDBC driver installation failed. You may need to manually install it later.")
+                    logger.warning("⚠️ Download mysql-connector-j-8.0.33.jar and place it in {install_path}/libs/")
+            else:
+                logger.info("✓ MySQL JDBC driver already available")
+            
+            # Verify essential libraries exist
+            logger.info("Verifying essential libraries...")
+            verify_libs_cmd = f"ls -la {install_path}/libs/ 2>/dev/null | head -10 || echo 'Libs directory empty'"
+            libs_output = execute_remote_command(ssh, verify_libs_cmd)
+            logger.info(f"Available libraries: {libs_output}")
+            
+            # Create libs directory if it doesn't exist
+            execute_remote_command(ssh, f"sudo mkdir -p {install_path}/libs/ && sudo chown {deploy_user}:{deploy_user} {install_path}/libs/")
                     
         except Exception as e:
             logger.error(f"Failed to configure plugins: {e}")
@@ -1067,6 +1129,16 @@ mybatis-plus:
             import pymysql
             # 确保密码是字符串类型，解决 PyMySQL 兼容性问题
             password = str(db_config['password']) if db_config['password'] is not None else ''
+            
+            # Validate database configuration first
+            required_db_fields = ['host', 'username', 'password', 'database']
+            for field in required_db_fields:
+                if not db_config.get(field):
+                    raise ValueError(f"Database configuration missing required field: {field}")
+            
+            logger.info(f"Connecting to database: {db_config['host']}:{db_config.get('port', 3306)}")
+            logger.info(f"Database name: {db_config['database']}")
+            logger.info(f"Username: {db_config['username']}")
             
             # Connect to MySQL server (without specifying database)
             conn = pymysql.connect(

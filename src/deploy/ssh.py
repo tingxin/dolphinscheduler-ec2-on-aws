@@ -10,18 +10,52 @@ from src.utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 
-def get_ssh_key_path():
+def get_ssh_key_path(config=None):
     """
-    Get SSH key path from environment or default location
+    Get SSH key path from environment, config, or default location
+    
+    Args:
+        config: Configuration dictionary (optional)
     
     Returns:
         Path to SSH key
     """
+    # Priority 1: Environment variable
     key_path = os.getenv('SSH_KEY_PATH')
     if key_path:
-        return Path(key_path).expanduser()
+        path = Path(key_path).expanduser()
+        if path.exists():
+            return path
+        else:
+            logger.warning(f"SSH_KEY_PATH points to non-existent file: {path}")
     
-    # Try default locations
+    # Priority 2: Derive from config key_name
+    if config and 'aws' in config and 'key_name' in config['aws']:
+        key_name = config['aws']['key_name']
+        # Try common naming patterns
+        possible_names = [
+            f"{key_name}.pem",
+            f"{key_name}",
+            f"{key_name}.key"
+        ]
+        
+        # Check in common directories
+        search_dirs = [
+            Path.home() / '.ssh',
+            Path.home() / 'Downloads',
+            Path.home() / '.aws',
+            Path.cwd()
+        ]
+        
+        for directory in search_dirs:
+            if directory.exists():
+                for name in possible_names:
+                    key_path = directory / name
+                    if key_path.exists():
+                        logger.info(f"Found SSH key: {key_path}")
+                        return key_path
+    
+    # Priority 3: Try default locations
     default_paths = [
         Path.home() / '.ssh' / 'id_rsa',
         Path.home() / '.ssh' / 'id_ed25519',
@@ -29,12 +63,22 @@ def get_ssh_key_path():
     
     for path in default_paths:
         if path.exists():
+            logger.info(f"Using default SSH key: {path}")
             return path
     
-    raise FileNotFoundError("SSH key not found. Set SSH_KEY_PATH environment variable")
+    # Provide helpful error message
+    error_msg = "SSH key not found. Please:\n"
+    error_msg += "1. Set SSH_KEY_PATH environment variable, or\n"
+    error_msg += "2. Place your key file in ~/.ssh/ directory, or\n"
+    if config and 'aws' in config:
+        key_name = config['aws'].get('key_name', 'your-key')
+        error_msg += f"3. Place {key_name}.pem in current directory or ~/Downloads/\n"
+    error_msg += "4. Ensure the key file has correct permissions (chmod 600)"
+    
+    raise FileNotFoundError(error_msg)
 
 
-def connect_ssh(host, username='ec2-user', key_file=None, port=22):
+def connect_ssh(host, username='ec2-user', key_file=None, port=22, config=None):
     """
     Create SSH connection
     
@@ -43,33 +87,43 @@ def connect_ssh(host, username='ec2-user', key_file=None, port=22):
         username: SSH username
         key_file: Path to SSH key file
         port: SSH port
+        config: Configuration dictionary (for key path resolution)
     
     Returns:
         SSH client
     """
     if key_file is None:
-        key_file = get_ssh_key_path()
+        key_file = get_ssh_key_path(config)
     
     # Ensure key file has correct permissions
-    os.chmod(key_file, 0o600)
+    try:
+        os.chmod(key_file, 0o600)
+    except OSError as e:
+        logger.warning(f"Could not set key file permissions: {e}")
     
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     
     try:
+        logger.debug(f"Connecting to {host} with key {key_file}")
         ssh.connect(
             hostname=host,
             username=username,
             key_filename=str(key_file),
             port=port,
-            timeout=10
+            timeout=15,  # Increased timeout
+            banner_timeout=30  # Add banner timeout
         )
         return ssh
+    except paramiko.AuthenticationException:
+        raise Exception(f"SSH authentication failed to {host}. Check key file: {key_file}")
+    except paramiko.SSHException as e:
+        raise Exception(f"SSH connection error to {host}: {str(e)}")
     except Exception as e:
         raise Exception(f"SSH connection failed to {host}: {str(e)}")
 
 
-def wait_for_ssh(host, username='ec2-user', key_file=None, max_retries=30, retry_interval=10):
+def wait_for_ssh(host, username='ec2-user', key_file=None, max_retries=30, retry_interval=10, config=None):
     """
     Wait for SSH service to be available
     
@@ -79,25 +133,32 @@ def wait_for_ssh(host, username='ec2-user', key_file=None, max_retries=30, retry
         key_file: Path to SSH key file
         max_retries: Maximum retry attempts
         retry_interval: Interval between retries (seconds)
+        config: Configuration dictionary (for key path resolution)
     
     Returns:
         True if SSH is available
     """
     if key_file is None:
-        key_file = get_ssh_key_path()
+        key_file = get_ssh_key_path(config)
+    
+    logger.info(f"Waiting for SSH on {host} (using key: {key_file})")
     
     for i in range(max_retries):
         try:
-            ssh = connect_ssh(host, username, key_file)
+            ssh = connect_ssh(host, username, key_file, config=config)
+            # Test connection with a simple command
+            ssh.exec_command('echo "SSH test"', timeout=5)
             ssh.close()
             logger.info(f"✓ SSH available on {host}")
             return True
         except Exception as e:
             if i < max_retries - 1:
-                logger.info(f"Waiting for SSH on {host} (attempt {i+1}/{max_retries})...")
+                logger.debug(f"SSH attempt {i+1}/{max_retries} failed for {host}: {str(e)}")
+                if i % 5 == 0:  # Log every 5th attempt to reduce noise
+                    logger.info(f"Still waiting for SSH on {host} (attempt {i+1}/{max_retries})...")
                 time.sleep(retry_interval)
             else:
-                logger.error(f"SSH not available on {host}: {str(e)}")
+                logger.error(f"SSH not available on {host} after {max_retries} attempts: {str(e)}")
                 return False
     
     return False

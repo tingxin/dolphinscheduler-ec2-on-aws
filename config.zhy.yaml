@@ -4,16 +4,20 @@
 # ================================================================================
 
 # ================================================================================
+# 【项目信息】用于资源标签管理
+# ================================================================================
+project:
+  name: dolphinscheduler-prod  # 项目名称，用于 AWS 资源标签
+
+# ================================================================================
 # 【必填配置】以下配置必须填写
 # ================================================================================
-
-# ===== 数据库配置 (RDS MySQL) - 必填 =====
 database:
   type: mysql
   host: tx-db.cbore8wpy3mc.us-east-2.rds.amazonaws.com  # 必填：RDS 端点地址
   port: 3306
-  username: user  # 必填：数据库用户名
-  password: Demo1234  # 必填：数据库密码
+  username: dsadmin  # 必填：数据库用户名
+  password: ds123456  # 必填：数据库密码
   database: dolphinscheduler  # 必填：数据库名称
   params: useUnicode=true&characterEncoding=UTF-8&useSSL=false
 
@@ -22,7 +26,7 @@ registry:
   type: zookeeper
   # 必填：Zookeeper 集群地址
   servers:
-    - ec2-3-145-88-7.us-east-2.compute.amazonaws.com:2181
+    - 172.31.29.59:2181
   namespace: dolphinscheduler
   connection_timeout: 30000
   session_timeout: 60000
@@ -34,36 +38,36 @@ registry:
 # ===== 资源存储配置 (S3) - 必填 =====
 storage:
   type: S3
-  bucket: tx-mageline-eks  # 必填：S3 bucket 名称
-  region: us-east-2  # 必填：S3 区域
+  bucket: dolphinscheduler-tx  # 必填：S3 bucket 名称
+  region: cn-northwest-1  # 必填：S3 区域
   upload_path: /dolphinscheduler
   use_iam_role: true  # 推荐使用 IAM Role
   # 仅当 use_iam_role=false 时需要填写
   access_key_id: ""
   secret_access_key: ""
-  endpoint: https://s3.us-east-2.amazonaws.com
+  endpoint: https://s3.cn-northwest-1.amazonaws.com
 
 # ===== AWS 基础配置 - 必填 =====
 aws:
-  region: us-east-2  # 必填：AWS 区域
-  vpc_id: vpc-0c9a0d81e8f5ca012 # 必填：VPC ID
+  region: cn-northwest-1  # 必填：AWS 区域
+  vpc_id: vpc-3acb5e53 # 必填：VPC ID
   # 必填：子网配置（支持跨可用区高可用部署）
   # 建议配置 2-3 个不同可用区的子网
   subnets:
-    - subnet_id: subnet-027700489b00e3c22  # 可用区 A 的子网
-      availability_zone: us-east-2a
-    - subnet_id: subnet-07589363bd3782beb  # 可用区 B 的子网
-      availability_zone: us-east-2b
-    - subnet_id: subnet-0f0fee34cbe94fe38  # 可用区 C 的子网（可选）
-      availability_zone: us-east-2c
-  key_name: ec2-ohio  # 必填：SSH 密钥对名称
-  iam_instance_profile: S3AdminRole  # 必填（如果 use_iam_role=true）
+    - subnet_id: subnet-32aa255b  # 可用区 A 的子网
+      availability_zone: cn-northwest-1a
+    - subnet_id: subnet-9a3c9de1  # 可用区 B 的子网
+      availability_zone: cn-northwest-1b
+    - subnet_id: subnet-988e83d2  # 可用区 C 的子网（可选）
+      availability_zone: cn-northwest-1c
+  key_name: tingxin_dev  # 必填：SSH 密钥对名称
+  iam_instance_profile: AdminRole  # 必填（如果 use_iam_role=true）
   # 必填：安全组配置
   security_groups:
-    master: sg-0b4d077af6fa8c4ee
-    worker: sg-0b4d077af6fa8c4ee
-    api: sg-0b4d077af6fa8c4ee
-    alert: sg-0b4d077af6fa8c4ee
+    master: sg-0cec8b48cd93b0397
+    worker: sg-0cec8b48cd93b0397
+    api: sg-0cec8b48cd93b0397
+    alert: sg-0cec8b48cd93b0397
 
 # ===== 集群节点配置 - 必填 =====
 cluster:
@@ -99,7 +103,10 @@ cluster:
 deployment:
   user: dolphinscheduler  # 必填：部署用户（需要 sudo 权限）
   install_path: /opt/dolphinscheduler  # 必填：安装路径
-  version: 3.2.0  # 必填：DolphinScheduler 版本
+  version: 3.3.2  # 必填：DolphinScheduler 版本（推荐使用 3.3.2）
+  skip_system_update: true  # 跳过系统更新以加快部署（推荐）
+  parallel_init_workers: 10  # 并行初始化的最大线程数
+  download_on_remote: true  # 在目标节点直接下载（推荐，更快）
 
 # ================================================================================
 # 【可选配置】以下配置有默认值，可根据需要调整
@@ -218,7 +225,12 @@ jvm:
 # ===== 其他配置（可选）=====
 advanced:
   # 下载地址
-  download_url: https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
+  # 清华镜像（推荐，中国访问快）
+  download_url: https://mirrors.tuna.tsinghua.edu.cn/apache/dolphinscheduler/3.3.2/apache-dolphinscheduler-3.3.2-bin.tar.gz
+  # Apache 官方归档（备选）
+  # download_url: https://archive.apache.org/dist/dolphinscheduler/3.3.2/apache-dolphinscheduler-3.3.2-bin.tar.gz
+  # 华为云镜像（备选）
+  # download_url: https://repo.huaweicloud.com/apache/dolphinscheduler/3.3.2/apache-dolphinscheduler-3.3.2-bin.tar.gz
 
   # 日志配置
   logging:
