@@ -26,7 +26,7 @@ registry:
   type: zookeeper
   # 必填：Zookeeper 集群地址
   servers:
-    - 172.31.29.59:2181
+    - 172.31.6.163:2181
   namespace: dolphinscheduler
   connection_timeout: 30000
   session_timeout: 60000
