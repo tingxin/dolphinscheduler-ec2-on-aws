@@ -364,53 +364,28 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                     # Move from temp to install path on first master
                     copy_cmd = f"sudo -u {deploy_user} cp -r {extract_dir}/* {config['deployment']['install_path']}/"
                 else:
-                    # Use rsync over SSH with ec2-user, then change ownership
-                    temp_path = f"/tmp/ds-deploy-{int(time.time())}"
+                    # Download and extract on each node individually (simpler approach)
                     copy_cmd = f"""
                     set -e  # Exit on any error
                     
-                    # Create temp directory
-                    mkdir -p {temp_path}
-                    echo "Created temp directory: {temp_path}"
+                    echo "Downloading DolphinScheduler package on this node..."
                     
-                    # Try to copy from first master
-                    echo "Attempting to copy from {first_master}..."
-                    
-                    # First try from temp directory
-                    if scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o BatchMode=yes -r ec2-user@{first_master}:{extract_dir}/* {temp_path}/ 2>&1; then
-                        echo "✓ Copied from temp directory: {extract_dir}"
-                    else
-                        echo "Failed to copy from temp directory, trying install directory..."
-                        # Try from install directory
-                        if scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o BatchMode=yes -r ec2-user@{first_master}:{config["deployment"]["install_path"]}/* {temp_path}/ 2>&1; then
-                            echo "✓ Copied from install directory: {config["deployment"]["install_path"]}"
-                        else
-                            echo "✗ Failed to copy from both locations"
-                            echo "Checking what exists on first master..."
-                            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 ec2-user@{first_master} "ls -la {extract_dir}/ {config["deployment"]["install_path"]}/ 2>&1 || echo 'Directory check failed'"
-                            exit 1
-                        fi
+                    # Download package
+                    cd /tmp
+                    if [ ! -f apache-dolphinscheduler-{config['deployment']['version']}-bin.tar.gz ]; then
+                        wget -O apache-dolphinscheduler-{config['deployment']['version']}-bin.tar.gz {config.get('advanced', {}).get('download_url', f'https://archive.apache.org/dist/dolphinscheduler/{config["deployment"]["version"]}/apache-dolphinscheduler-{config["deployment"]["version"]}-bin.tar.gz')}
                     fi
                     
-                    # Verify files were copied
-                    if [ ! -d "{temp_path}/bin" ]; then
-                        echo "✗ No bin directory found in copied files"
-                        ls -la {temp_path}/
-                        exit 1
+                    # Extract if not already extracted
+                    if [ ! -d apache-dolphinscheduler-{config['deployment']['version']}-bin ]; then
+                        tar -xzf apache-dolphinscheduler-{config['deployment']['version']}-bin.tar.gz
                     fi
                     
-                    echo "✓ Files verified in temp directory"
+                    # Copy to install directory
+                    echo "Copying files to install directory..."
+                    sudo -u {deploy_user} cp -r apache-dolphinscheduler-{config['deployment']['version']}-bin/* {config["deployment"]["install_path"]}/
                     
-                    # Move to final location and change ownership
-                    echo "Moving files to final location..."
-                    sudo cp -r {temp_path}/* {config["deployment"]["install_path"]}/
-                    sudo chown -R {deploy_user}:{deploy_user} {config["deployment"]["install_path"]}
-                    
-                    echo "✓ Files moved and ownership changed"
-                    
-                    # Cleanup
-                    rm -rf {temp_path}
-                    echo "✓ Cleanup completed"
+                    echo "✓ Files copied successfully"
                     """
                 
                 execute_remote_command(node_ssh, copy_cmd, timeout=300)
