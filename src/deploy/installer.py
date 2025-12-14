@@ -364,28 +364,19 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                     # Move from temp to install path on first master
                     copy_cmd = f"sudo -u {deploy_user} cp -r {extract_dir}/* {config['deployment']['install_path']}/"
                 else:
-                    # Download and extract on each node individually (simpler approach)
+                    # Copy from first master node using dolphinscheduler user SSH
                     copy_cmd = f"""
                     set -e  # Exit on any error
                     
-                    echo "Downloading DolphinScheduler package on this node..."
+                    echo "Copying DolphinScheduler files from first master node..."
                     
-                    # Download package
-                    cd /tmp
-                    if [ ! -f apache-dolphinscheduler-{config['deployment']['version']}-bin.tar.gz ]; then
-                        wget -O apache-dolphinscheduler-{config['deployment']['version']}-bin.tar.gz {config.get('advanced', {}).get('download_url', f'https://archive.apache.org/dist/dolphinscheduler/{config["deployment"]["version"]}/apache-dolphinscheduler-{config["deployment"]["version"]}-bin.tar.gz')}
-                    fi
+                    # Use dolphinscheduler user to copy from first master
+                    sudo -u {deploy_user} bash -c '
+                        # Copy files using dolphinscheduler SSH keys
+                        scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 -r {deploy_user}@{first_master}:{extract_dir}/* {config["deployment"]["install_path"]}/
+                    '
                     
-                    # Extract if not already extracted
-                    if [ ! -d apache-dolphinscheduler-{config['deployment']['version']}-bin ]; then
-                        tar -xzf apache-dolphinscheduler-{config['deployment']['version']}-bin.tar.gz
-                    fi
-                    
-                    # Copy to install directory
-                    echo "Copying files to install directory..."
-                    sudo -u {deploy_user} cp -r apache-dolphinscheduler-{config['deployment']['version']}-bin/* {config["deployment"]["install_path"]}/
-                    
-                    echo "✓ Files copied successfully"
+                    echo "✓ Files copied successfully from first master"
                     """
                 
                 execute_remote_command(node_ssh, copy_cmd, timeout=300)
