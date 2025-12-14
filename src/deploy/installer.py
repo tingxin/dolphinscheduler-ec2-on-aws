@@ -637,7 +637,23 @@ def deploy_dolphinscheduler(config, package_file=None, username='ec2-user', key_
     install_path = config['deployment']['install_path']
     version = config['deployment']['version']
     
-    ssh = connect_ssh(first_master, username, key_file)
+    def get_ssh_connection():
+        """Get SSH connection with retry mechanism"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                ssh = connect_ssh(first_master, username, key_file)
+                # Test connection
+                ssh.exec_command('echo "connection test"')
+                return ssh
+            except Exception as e:
+                logger.warning(f"SSH connection attempt {attempt + 1}/{max_retries} failed: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(5)
+                else:
+                    raise Exception(f"Failed to establish SSH connection after {max_retries} attempts")
+    
+    ssh = get_ssh_connection()
     
     try:
         remote_package = f"/tmp/apache-dolphinscheduler-{version}-bin.tar.gz"
@@ -932,17 +948,41 @@ dolphinscheduler-datasource-mysql
             os.remove(temp_plugins_config)
             logger.info("✓ Plugins configuration created")
             
-            # Run install-plugins.sh script
-            logger.info("Running install-plugins.sh script...")
+            # Run install-plugins.sh script with extended timeout
+            logger.info("Running install-plugins.sh script (this may take several minutes)...")
             install_plugins_cmd = f"cd {install_path} && sudo -u {deploy_user} bash bin/install-plugins.sh {version}"
             
             try:
-                plugins_output = execute_remote_command(ssh, install_plugins_cmd, timeout=300)
+                # Use longer timeout for plugin installation (10 minutes)
+                logger.info("Starting plugin installation - this will download dependencies from Maven...")
+                
+                # Check SSH connection before long operation
+                try:
+                    ssh.exec_command('echo "SSH connection check"')
+                except:
+                    logger.warning("SSH connection lost, reconnecting...")
+                    ssh = get_ssh_connection()
+                
+                plugins_output = execute_remote_command(ssh, install_plugins_cmd, timeout=600)
                 logger.info(f"Plugins installation output: {plugins_output}")
                 logger.info("✓ Plugins installed successfully")
             except Exception as e:
                 logger.warning(f"Plugin installation failed: {e}")
-                logger.info("Attempting manual MySQL JDBC driver installation as fallback...")
+                
+                # Check if it's SSH connection issue
+                if "SSH session not active" in str(e) or "not connected" in str(e).lower():
+                    logger.info("SSH connection lost during plugin installation, reconnecting...")
+                    try:
+                        ssh = get_ssh_connection()
+                        logger.info("SSH reconnected, retrying plugin installation...")
+                        plugins_output = execute_remote_command(ssh, install_plugins_cmd, timeout=600)
+                        logger.info(f"Plugins installation output (retry): {plugins_output}")
+                        logger.info("✓ Plugins installed successfully on retry")
+                    except Exception as retry_e:
+                        logger.warning(f"Plugin installation retry also failed: {retry_e}")
+                        logger.info("Attempting manual MySQL JDBC driver installation as fallback...")
+                else:
+                    logger.info("Attempting manual MySQL JDBC driver installation as fallback...")
                 
                 # Fallback: manually install MySQL JDBC driver
                 mysql_driver_url = "https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.33/mysql-connector-java-8.0.33.jar"

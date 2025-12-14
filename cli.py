@@ -25,8 +25,10 @@ from src.utils.validator import (
     validate_s3_access
 )
 
-# Setup logger
-logger = setup_logger('cli', 'logs/cli.log')
+# Setup logger with detailed file logging
+import datetime
+log_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+logger = setup_logger('cli', f'logs/deployment_{log_timestamp}.log')
 
 
 @click.group()
