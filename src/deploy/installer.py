@@ -894,40 +894,76 @@ export DOLPHINSCHEDULER_HOME={install_path}
                 logger.warning(f"Failed to clean up temp file: {e}")
         
         # ========================================================================
-        # STEP 2: Download and install MySQL JDBC driver (required for database initialization)
+        # STEP 2: Install DolphinScheduler plugins (required for 3.3.0+)
         # ========================================================================
-        logger.info("Installing MySQL JDBC driver...")
+        logger.info("Installing DolphinScheduler plugins...")
         
-        # Download MySQL Connector/J
-        mysql_driver_url = "https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.33/mysql-connector-java-8.0.33.jar"
-        download_driver_cmd = f"""
-        cd /tmp && \
-        wget -O mysql-connector-java-8.0.33.jar {mysql_driver_url} && \
-        sudo cp mysql-connector-java-8.0.33.jar {install_path}/libs/ && \
-        sudo chown {deploy_user}:{deploy_user} {install_path}/libs/mysql-connector-java-8.0.33.jar && \
-        ls -la {install_path}/libs/mysql-connector-java-8.0.33.jar
-        """
+        # Configure plugins - we need at least MySQL connector and basic task plugins
+        plugins_config = """--task-plugins--
+dolphinscheduler-task-shell
+dolphinscheduler-task-sql
+dolphinscheduler-task-python
+dolphinscheduler-task-java
+--end--
+
+--alert-plugins--
+dolphinscheduler-alert-email
+--end--
+
+--datasource-plugins--
+dolphinscheduler-datasource-mysql
+--end--"""
+        
+        # Create plugins config file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as f:
+            f.write(plugins_config)
+            temp_plugins_config = f.name
         
         try:
-            driver_output = execute_remote_command(ssh, download_driver_cmd)
-            logger.info(f"MySQL JDBC driver installed: {driver_output}")
-        except Exception as e:
-            logger.warning(f"Failed to download MySQL driver from Maven, trying alternative...")
-            # Try alternative download
-            alt_driver_url = "https://dev.mysql.com/get/Downloads/Connector-J/mysql-connector-j-8.0.33.jar"
-            alt_download_cmd = f"""
-            cd /tmp && \
-            wget -O mysql-connector-j-8.0.33.jar {alt_driver_url} && \
-            sudo cp mysql-connector-j-8.0.33.jar {install_path}/libs/ && \
-            sudo chown {deploy_user}:{deploy_user} {install_path}/libs/mysql-connector-j-8.0.33.jar && \
-            ls -la {install_path}/libs/mysql-connector-j-8.0.33.jar
-            """
+            # Upload plugins config
+            temp_remote_plugins_config = "/tmp/plugins_config"
+            upload_file(ssh, temp_plugins_config, temp_remote_plugins_config)
+            
+            # Move to final location
+            plugins_config_path = f"{install_path}/conf/plugins_config"
+            move_cmd = f"sudo mv {temp_remote_plugins_config} {plugins_config_path} && sudo chown {deploy_user}:{deploy_user} {plugins_config_path}"
+            execute_remote_command(ssh, move_cmd)
+            
+            os.remove(temp_plugins_config)
+            logger.info("✓ Plugins configuration created")
+            
+            # Run install-plugins.sh script
+            logger.info("Running install-plugins.sh script...")
+            install_plugins_cmd = f"cd {install_path} && sudo -u {deploy_user} bash bin/install-plugins.sh {version}"
+            
             try:
-                alt_output = execute_remote_command(ssh, alt_download_cmd)
-                logger.info(f"MySQL JDBC driver installed (alternative): {alt_output}")
-            except Exception as alt_e:
-                logger.error(f"Failed to install MySQL JDBC driver: {alt_e}")
-                raise Exception("Could not install MySQL JDBC driver. Database initialization will fail.")
+                plugins_output = execute_remote_command(ssh, install_plugins_cmd, timeout=300)
+                logger.info(f"Plugins installation output: {plugins_output}")
+                logger.info("✓ Plugins installed successfully")
+            except Exception as e:
+                logger.warning(f"Plugin installation failed: {e}")
+                logger.info("Attempting manual MySQL JDBC driver installation as fallback...")
+                
+                # Fallback: manually install MySQL JDBC driver
+                mysql_driver_url = "https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.33/mysql-connector-java-8.0.33.jar"
+                download_driver_cmd = f"""
+                cd /tmp && \
+                wget -O mysql-connector-java-8.0.33.jar {mysql_driver_url} && \
+                sudo cp mysql-connector-java-8.0.33.jar {install_path}/libs/ && \
+                sudo chown {deploy_user}:{deploy_user} {install_path}/libs/mysql-connector-java-8.0.33.jar && \
+                ls -la {install_path}/libs/mysql-connector-java-8.0.33.jar
+                """
+                
+                try:
+                    driver_output = execute_remote_command(ssh, download_driver_cmd)
+                    logger.info(f"MySQL JDBC driver installed manually: {driver_output}")
+                except Exception as driver_e:
+                    logger.error(f"Failed to install MySQL JDBC driver: {driver_e}")
+                    raise Exception("Could not install required plugins or MySQL JDBC driver.")
+                    
+        except Exception as e:
+            logger.error(f"Failed to configure plugins: {e}")
+            raise
         
         # ========================================================================
         # STEP 3: Initialize database (now JAVA_HOME and JDBC driver are available)
