@@ -346,12 +346,15 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                     'component': component
                 })
         
-        # Deploy to all nodes
-        for node_info in all_nodes:
+        # Deploy to all nodes in parallel
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from tqdm import tqdm
+        
+        def deploy_to_node(node_info):
             host = node_info['host']
             component = node_info['component']
             
-            logger.info(f"Deploying {component} to {host}...")
+            logger.debug(f"Deploying {component} to {host}...")
             
             node_ssh = connect_ssh(host, username, key_file, config=config)
             try:
@@ -385,13 +388,39 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                 execute_remote_command(node_ssh, f"sudo chown -R {deploy_user}:{deploy_user} {config['deployment']['install_path']}")
                 execute_remote_command(node_ssh, f"sudo chmod +x {config['deployment']['install_path']}/bin/*.sh")
                 
-                logger.info(f"✓ Deployed {component} to {host}")
+                return f"✓ Deployed {component} to {host}"
                 
             except Exception as e:
-                logger.error(f"Failed to deploy to {host}: {e}")
-                raise
+                raise Exception(f"Failed to deploy {component} to {host}: {e}")
             finally:
                 node_ssh.close()
+        
+        # First deploy to master node (sequential)
+        master_node = {'host': first_master, 'component': 'master'}
+        logger.info(f"Deploying to first master node: {first_master}")
+        deploy_to_node(master_node)
+        logger.info(f"✓ First master node deployed: {first_master}")
+        
+        # Then deploy to other nodes in parallel
+        other_nodes = [node for node in all_nodes if node['host'] != first_master]
+        
+        if other_nodes:
+            logger.info(f"Deploying to {len(other_nodes)} remaining nodes in parallel...")
+            
+            max_workers = min(len(other_nodes), 5)  # Limit concurrent deployments
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(deploy_to_node, node): node for node in other_nodes}
+                
+                with tqdm(total=len(other_nodes), desc="Parallel deployment") as pbar:
+                    for future in as_completed(futures):
+                        node = futures[future]
+                        try:
+                            result = future.result()
+                            logger.info(result)
+                            pbar.update(1)
+                        except Exception as e:
+                            logger.error(f"Deployment failed: {e}")
+                            raise
         
         logger.info("✓ DolphinScheduler 3.2.0 installation completed")
         
