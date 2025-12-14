@@ -367,25 +367,50 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                     # Use rsync over SSH with ec2-user, then change ownership
                     temp_path = f"/tmp/ds-deploy-{int(time.time())}"
                     copy_cmd = f"""
+                    set -e  # Exit on any error
+                    
                     # Create temp directory
                     mkdir -p {temp_path}
+                    echo "Created temp directory: {temp_path}"
                     
-                    # Copy from first master using ec2-user (from temp directory first, then from install path)
-                    if scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 -r ec2-user@{first_master}:{extract_dir}/* {temp_path}/ 2>/dev/null; then
-                        echo "Copied from temp directory"
-                    elif scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 -r ec2-user@{first_master}:{config["deployment"]["install_path"]}/* {temp_path}/ 2>/dev/null; then
-                        echo "Copied from install directory"
+                    # Try to copy from first master
+                    echo "Attempting to copy from {first_master}..."
+                    
+                    # First try from temp directory
+                    if scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o BatchMode=yes -r ec2-user@{first_master}:{extract_dir}/* {temp_path}/ 2>&1; then
+                        echo "✓ Copied from temp directory: {extract_dir}"
                     else
-                        echo "Failed to copy from both locations"
+                        echo "Failed to copy from temp directory, trying install directory..."
+                        # Try from install directory
+                        if scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o BatchMode=yes -r ec2-user@{first_master}:{config["deployment"]["install_path"]}/* {temp_path}/ 2>&1; then
+                            echo "✓ Copied from install directory: {config["deployment"]["install_path"]}"
+                        else
+                            echo "✗ Failed to copy from both locations"
+                            echo "Checking what exists on first master..."
+                            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 ec2-user@{first_master} "ls -la {extract_dir}/ {config["deployment"]["install_path"]}/ 2>&1 || echo 'Directory check failed'"
+                            exit 1
+                        fi
+                    fi
+                    
+                    # Verify files were copied
+                    if [ ! -d "{temp_path}/bin" ]; then
+                        echo "✗ No bin directory found in copied files"
+                        ls -la {temp_path}/
                         exit 1
                     fi
                     
+                    echo "✓ Files verified in temp directory"
+                    
                     # Move to final location and change ownership
+                    echo "Moving files to final location..."
                     sudo cp -r {temp_path}/* {config["deployment"]["install_path"]}/
                     sudo chown -R {deploy_user}:{deploy_user} {config["deployment"]["install_path"]}
                     
+                    echo "✓ Files moved and ownership changed"
+                    
                     # Cleanup
                     rm -rf {temp_path}
+                    echo "✓ Cleanup completed"
                     """
                 
                 execute_remote_command(node_ssh, copy_cmd, timeout=300)
