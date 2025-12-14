@@ -64,10 +64,10 @@ aws:
   iam_instance_profile: AdminRole  # 必填（如果 use_iam_role=true）
   # 必填：安全组配置
   security_groups:
-    master: sg-0cec8b48cd93b0397
-    worker: sg-0cec8b48cd93b0397
-    api: sg-0cec8b48cd93b0397
-    alert: sg-0cec8b48cd93b0397
+    master: sg-0b4d077af6fa8c4ee
+    worker: sg-0b4d077af6fa8c4ee
+    api: sg-0b4d077af6fa8c4ee
+    alert: sg-0b4d077af6fa8c4ee
 
 # ===== 集群节点配置 - 必填 =====
 cluster:
