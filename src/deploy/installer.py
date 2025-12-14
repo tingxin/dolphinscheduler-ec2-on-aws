@@ -1035,7 +1035,32 @@ echo "Script exists:" && ls -la bin/upgrade-schema.sh"""
                 env_check = execute_remote_command(ssh, env_check_cmd)
                 logger.info(f"Environment check: {env_check}")
                 
-                output = execute_remote_command(ssh, upgrade_cmd, timeout=600)
+                try:
+                    output = execute_remote_command(ssh, upgrade_cmd, timeout=600)
+                except Exception as e:
+                    # Capture the error output for analysis
+                    error_msg = str(e)
+                    logger.error(f"Database initialization failed with error: {error_msg}")
+                    
+                    # Try to get more detailed output by running the command without error handling
+                    try:
+                        stdin, stdout, stderr = ssh.exec_command(upgrade_cmd, timeout=600)
+                        exit_code = stdout.channel.recv_exit_status()
+                        stdout_output = stdout.read().decode('utf-8')
+                        stderr_output = stderr.read().decode('utf-8')
+                        
+                        logger.info(f"Database initialization detailed output:")
+                        logger.info("=" * 60)
+                        logger.info(f"Exit code: {exit_code}")
+                        logger.info(f"STDOUT:\n{stdout_output}")
+                        logger.info(f"STDERR:\n{stderr_output}")
+                        logger.info("=" * 60)
+                        
+                        output = stdout_output + "\n" + stderr_output
+                    except Exception as detail_error:
+                        logger.error(f"Could not get detailed output: {detail_error}")
+                        output = error_msg
+                
                 logger.info(f"Database initialization output:")
                 logger.info("=" * 60)
                 logger.info(output)
@@ -1086,7 +1111,32 @@ sudo -E -u {deploy_user} bash bin/upgrade-schema.sh 2>&1"""
                 chmod_cmd = f"sudo chmod +x {install_path}/tools/bin/*.sh"
                 execute_remote_command(ssh, chmod_cmd)
                 
-                output = execute_remote_command(ssh, upgrade_cmd, timeout=600)
+                try:
+                    output = execute_remote_command(ssh, upgrade_cmd, timeout=600)
+                except Exception as e:
+                    # Capture the error output for analysis
+                    error_msg = str(e)
+                    logger.error(f"Database initialization retry failed with error: {error_msg}")
+                    
+                    # Try to get more detailed output
+                    try:
+                        stdin, stdout, stderr = ssh.exec_command(upgrade_cmd, timeout=600)
+                        exit_code = stdout.channel.recv_exit_status()
+                        stdout_output = stdout.read().decode('utf-8')
+                        stderr_output = stderr.read().decode('utf-8')
+                        
+                        logger.info(f"Database initialization retry detailed output:")
+                        logger.info("=" * 60)
+                        logger.info(f"Exit code: {exit_code}")
+                        logger.info(f"STDOUT:\n{stdout_output}")
+                        logger.info(f"STDERR:\n{stderr_output}")
+                        logger.info("=" * 60)
+                        
+                        output = stdout_output + "\n" + stderr_output
+                    except Exception as detail_error:
+                        logger.error(f"Could not get detailed retry output: {detail_error}")
+                        output = error_msg
+                
                 logger.info(f"Database initialization retry output:")
                 logger.info("=" * 60)
                 logger.info(output)
