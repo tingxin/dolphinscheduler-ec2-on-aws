@@ -115,7 +115,7 @@ deployment:
 # ===== EC2 实例详细配置（可选）=====
 ec2_advanced:
   master:
-    root_volume_size: 50  # 根卷大小（GB）
+    root_volume_size: 100  # 根卷大小（GB）
     root_volume_type: gp3  # 根卷类型
     tags:
       Name: dolphinscheduler-master
@@ -131,7 +131,7 @@ ec2_advanced:
       Component: worker
 
   api:
-    root_volume_size: 30
+    root_volume_size: 100
     root_volume_type: gp3
     tags:
       Name: dolphinscheduler-api
@@ -139,7 +139,7 @@ ec2_advanced:
       Component: api
 
   alert:
-    root_volume_size: 30  # 最小 30GB（AMI 快照要求）
+    root_volume_size: 100  # 最小 30GB（AMI 快照要求）
     root_volume_type: gp3
     tags:
       Name: dolphinscheduler-alert
