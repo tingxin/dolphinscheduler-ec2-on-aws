@@ -23,7 +23,7 @@ logger = setup_logger(__name__)
 
 def initialize_database(ssh, config, extract_dir):
     """
-    Initialize DolphinScheduler database schema
+    Initialize DolphinScheduler database schema (with duplicate check)
     
     Args:
         ssh: SSH connection
@@ -33,11 +33,11 @@ def initialize_database(ssh, config, extract_dir):
     Returns:
         True if successful
     """
-    logger.info("Initializing database schema...")
+    logger.info("Checking database schema status...")
     db_config = config['database']
     deploy_user = config['deployment']['user']
     
-    # Test database connectivity first
+    # Test database connectivity and check if schema exists
     try:
         import pymysql
         password = str(db_config['password']) if db_config['password'] is not None else ''
@@ -52,14 +52,42 @@ def initialize_database(ssh, config, extract_dir):
             charset='utf8mb4'
         )
         cursor = conn.cursor()
-        cursor.execute("SELECT 1")
+        
+        # Check if DolphinScheduler tables exist
+        logger.info("Checking if DolphinScheduler tables already exist...")
+        
+        # Check for key DolphinScheduler tables
+        key_tables = [
+            't_ds_user',
+            't_ds_project', 
+            't_ds_process_definition',
+            't_ds_task_definition',
+            't_ds_worker_group'
+        ]
+        
+        existing_tables = []
+        for table in key_tables:
+            cursor.execute(f"SHOW TABLES LIKE '{table}'")
+            if cursor.fetchone():
+                existing_tables.append(table)
+        
         conn.close()
+        
+        if len(existing_tables) >= 3:  # If most key tables exist
+            logger.info(f"✓ Database schema already initialized (found {len(existing_tables)}/{len(key_tables)} key tables)")
+            logger.info("Skipping database initialization to avoid conflicts")
+            return True
+        else:
+            logger.info(f"Found {len(existing_tables)}/{len(key_tables)} key tables, proceeding with initialization...")
+        
         logger.info("✓ Database connectivity verified")
+        
     except Exception as e:
         logger.error(f"Database connection failed: {e}")
         raise Exception(f"Cannot connect to database: {e}")
     
     # Run database initialization
+    logger.info("Initializing database schema...")
     init_db_cmd = f"cd {extract_dir} && sudo -u {deploy_user} bash tools/bin/upgrade-schema.sh"
     
     try:
@@ -68,8 +96,35 @@ def initialize_database(ssh, config, extract_dir):
         
         if "successfully" in db_output.lower() or "completed" in db_output.lower():
             logger.info("✓ Database schema initialized successfully")
+        elif "already exists" in db_output.lower() or "duplicate" in db_output.lower():
+            logger.info("✓ Database schema already exists, initialization skipped")
         else:
             logger.warning("Database initialization completed but check output for any issues")
+            
+        # Verify initialization by checking tables again
+        try:
+            conn = pymysql.connect(
+                host=db_config['host'],
+                port=db_config.get('port', 3306),
+                user=db_config['username'],
+                password=password,
+                database=db_config['database'],
+                connect_timeout=10,
+                charset='utf8mb4'
+            )
+            cursor = conn.cursor()
+            cursor.execute("SHOW TABLES LIKE 't_ds_%'")
+            tables = cursor.fetchall()
+            conn.close()
+            
+            if len(tables) > 10:  # DolphinScheduler should have many tables
+                logger.info(f"✓ Database verification passed ({len(tables)} DolphinScheduler tables found)")
+            else:
+                logger.warning(f"⚠ Only {len(tables)} DolphinScheduler tables found, may need manual verification")
+                
+        except Exception as verify_e:
+            logger.warning(f"Could not verify database initialization: {verify_e}")
+            
     except Exception as e:
         logger.warning(f"Database initialization may have failed: {e}")
         # Don't fail deployment, as database might already be initialized
@@ -279,18 +334,68 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
         # Step 6: Generate application.yaml files for all components
         configure_components(ssh, config, extract_dir)
         
-        # Step 7: Run the install.sh script to deploy to all nodes
-        logger.info("Running install.sh to deploy to all cluster nodes...")
+        # Step 7: Deploy to all nodes manually
+        logger.info("Deploying DolphinScheduler to all cluster nodes...")
         
-        install_cmd = f"cd {extract_dir} && sudo -u {deploy_user} bash bin/install.sh"
+        # Deploy to each node individually using simple copy approach
+        all_nodes = []
+        for component in ['master', 'worker', 'api', 'alert']:
+            for node in config['cluster'][component]['nodes']:
+                all_nodes.append({
+                    'host': node['host'],
+                    'component': component
+                })
         
-        try:
-            install_output = execute_remote_command(ssh, install_cmd, timeout=600)
-            logger.info(f"Install script output: {install_output}")
-            logger.info("✓ DolphinScheduler 3.2.0 installation completed")
-        except Exception as e:
-            logger.error(f"Installation script failed: {e}")
-            raise Exception(f"DolphinScheduler installation failed: {e}")
+        # Deploy to all nodes
+        for node_info in all_nodes:
+            host = node_info['host']
+            component = node_info['component']
+            
+            logger.info(f"Deploying {component} to {host}...")
+            
+            node_ssh = connect_ssh(host, username, key_file, config=config)
+            try:
+                # Create install directory
+                execute_remote_command(node_ssh, f"sudo mkdir -p {config['deployment']['install_path']}")
+                execute_remote_command(node_ssh, f"sudo chown {deploy_user}:{deploy_user} {config['deployment']['install_path']}")
+                
+                # Copy files to install directory
+                if host == first_master:
+                    # Move from temp to install path on first master
+                    copy_cmd = f"sudo -u {deploy_user} cp -r {extract_dir}/* {config['deployment']['install_path']}/"
+                else:
+                    # Use rsync over SSH with ec2-user, then change ownership
+                    temp_path = f"/tmp/ds-deploy-{int(time.time())}"
+                    copy_cmd = f"""
+                    # Create temp directory
+                    mkdir -p {temp_path}
+                    
+                    # Copy from first master using ec2-user
+                    scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 -r ec2-user@{first_master}:{config["deployment"]["install_path"]}/* {temp_path}/
+                    
+                    # Move to final location and change ownership
+                    sudo cp -r {temp_path}/* {config["deployment"]["install_path"]}/
+                    sudo chown -R {deploy_user}:{deploy_user} {config["deployment"]["install_path"]}
+                    
+                    # Cleanup
+                    rm -rf {temp_path}
+                    """
+                
+                execute_remote_command(node_ssh, copy_cmd, timeout=300)
+                
+                # Set permissions
+                execute_remote_command(node_ssh, f"sudo chown -R {deploy_user}:{deploy_user} {config['deployment']['install_path']}")
+                execute_remote_command(node_ssh, f"sudo chmod +x {config['deployment']['install_path']}/bin/*.sh")
+                
+                logger.info(f"✓ Deployed {component} to {host}")
+                
+            except Exception as e:
+                logger.error(f"Failed to deploy to {host}: {e}")
+                raise
+            finally:
+                node_ssh.close()
+        
+        logger.info("✓ DolphinScheduler 3.2.0 installation completed")
         
         logger.info("✓ DolphinScheduler 3.2.0 deployed successfully")
         return True

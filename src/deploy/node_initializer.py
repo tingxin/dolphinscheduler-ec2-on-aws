@@ -195,34 +195,40 @@ def create_deployment_user(host, username='ec2-user', deploy_user='dolphinschedu
 
 def setup_ssh_keys(nodes, username='ec2-user', key_file=None, config=None):
     """
-    Setup SSH key-based authentication between nodes
+    Setup SSH key-based authentication between nodes for dolphinscheduler user
     
     Args:
         nodes: List of node dictionaries
-        username: SSH username
+        username: SSH username (ec2-user)
         key_file: SSH key file path
         config: Configuration dictionary
     
     Returns:
         True if successful
     """
-    logger.info("Setting up SSH keys between nodes...")
+    logger.info("Setting up SSH keys between nodes for dolphinscheduler user...")
     
-    # Generate SSH key on first node
+    deploy_user = config.get('deployment', {}).get('user', 'dolphinscheduler')
+    
+    # Generate SSH key on first node for dolphinscheduler user
     first_node = nodes[0]['host']
     ssh = connect_ssh(first_node, username, key_file, config=config)
     
     try:
-        # Generate key if not exists
-        generate_key_script = """
-        if [ ! -f ~/.ssh/id_rsa ]; then
-            ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
-        fi
-        cat ~/.ssh/id_rsa.pub
+        # Generate key for dolphinscheduler user if not exists
+        generate_key_script = f"""
+        sudo -u {deploy_user} bash -c '
+            mkdir -p /home/{deploy_user}/.ssh
+            chmod 700 /home/{deploy_user}/.ssh
+            if [ ! -f /home/{deploy_user}/.ssh/id_rsa ]; then
+                ssh-keygen -t rsa -b 4096 -f /home/{deploy_user}/.ssh/id_rsa -N ""
+            fi
+            cat /home/{deploy_user}/.ssh/id_rsa.pub
+        '
         """
         
         pub_key = execute_remote_command(ssh, generate_key_script).strip()
-        logger.info("✓ SSH key generated")
+        logger.info("✓ SSH key generated for dolphinscheduler user")
         
     finally:
         ssh.close()
@@ -232,10 +238,16 @@ def setup_ssh_keys(nodes, username='ec2-user', key_file=None, config=None):
         ssh = connect_ssh(node['host'], username, key_file, config=config)
         try:
             add_key_script = f"""
-            mkdir -p ~/.ssh
-            chmod 700 ~/.ssh
-            echo "{pub_key}" >> ~/.ssh/authorized_keys
-            chmod 600 ~/.ssh/authorized_keys
+            sudo -u {deploy_user} bash -c '
+                mkdir -p /home/{deploy_user}/.ssh
+                chmod 700 /home/{deploy_user}/.ssh
+                echo "{pub_key}" >> /home/{deploy_user}/.ssh/authorized_keys
+                chmod 600 /home/{deploy_user}/.ssh/authorized_keys
+                # Remove duplicates
+                sort /home/{deploy_user}/.ssh/authorized_keys | uniq > /home/{deploy_user}/.ssh/authorized_keys.tmp
+                mv /home/{deploy_user}/.ssh/authorized_keys.tmp /home/{deploy_user}/.ssh/authorized_keys
+                chmod 600 /home/{deploy_user}/.ssh/authorized_keys
+            '
             """
             execute_remote_command(ssh, add_key_script)
             return node['host']
@@ -254,6 +266,23 @@ def setup_ssh_keys(nodes, username='ec2-user', key_file=None, config=None):
                 except Exception as e:
                     logger.error(f"Failed to add SSH key: {e}")
                     raise
+    
+    # Test SSH connectivity between nodes
+    logger.info("Testing SSH connectivity between nodes...")
+    first_node_ssh = connect_ssh(first_node, username, key_file, config=config)
+    try:
+        for node in nodes[1:]:  # Test from first node to others
+            test_cmd = f"sudo -u {deploy_user} ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 {deploy_user}@{node['host']} 'echo SSH_TEST_SUCCESS'"
+            try:
+                result = execute_remote_command(first_node_ssh, test_cmd, timeout=30)
+                if "SSH_TEST_SUCCESS" in result:
+                    logger.info(f"✓ SSH connectivity verified: {first_node} -> {node['host']}")
+                else:
+                    logger.warning(f"⚠ SSH test failed: {first_node} -> {node['host']}")
+            except Exception as e:
+                logger.warning(f"⚠ SSH test failed: {first_node} -> {node['host']}: {e}")
+    finally:
+        first_node_ssh.close()
     
     return True
 
@@ -376,3 +405,56 @@ def create_users_parallel(hosts, deploy_user, max_workers=10, config=None):
                     raise
     
     return True
+
+
+def deploy_to_single_node(host, source_dir, config, component, username='ec2-user', key_file=None):
+    """
+    Deploy DolphinScheduler to a single node
+    
+    Args:
+        host: Target host IP
+        source_dir: Source directory on first node
+        config: Configuration dictionary
+        component: Component type (master, worker, api, alert)
+        username: SSH username
+        key_file: SSH key file path
+    
+    Returns:
+        True if successful
+    """
+    logger.debug(f"Deploying {component} component to {host}")
+    
+    deploy_user = config['deployment']['user']
+    install_path = config['deployment']['install_path']
+    
+    ssh = connect_ssh(host, username, key_file, config=config)
+    
+    try:
+        # Create install directory
+        execute_remote_command(ssh, f"sudo mkdir -p {install_path}")
+        execute_remote_command(ssh, f"sudo chown {deploy_user}:{deploy_user} {install_path}")
+        
+        # If this is not the first node, copy files from first node
+        first_master = config['cluster']['master']['nodes'][0]['host']
+        if host != first_master:
+            # Copy DolphinScheduler files from first node
+            copy_script = f"""
+            sudo -u {deploy_user} scp -o StrictHostKeyChecking=no -r {deploy_user}@{first_master}:{source_dir}/* {install_path}/
+            """
+            execute_remote_command(ssh, copy_script, timeout=300)
+        else:
+            # Move files from temp directory to install path
+            execute_remote_command(ssh, f"sudo -u {deploy_user} cp -r {source_dir}/* {install_path}/")
+        
+        # Set permissions
+        execute_remote_command(ssh, f"sudo chown -R {deploy_user}:{deploy_user} {install_path}")
+        execute_remote_command(ssh, f"sudo chmod +x {install_path}/bin/*.sh")
+        
+        logger.debug(f"✓ Files deployed to {host}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to deploy to {host}: {e}")
+        raise
+    finally:
+        ssh.close()
