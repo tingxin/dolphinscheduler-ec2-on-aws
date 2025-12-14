@@ -2,6 +2,8 @@
 Node initialization and setup functions
 """
 import time
+import tempfile
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 from src.deploy.ssh import connect_ssh, execute_remote_command, execute_script
@@ -221,13 +223,30 @@ def setup_ssh_keys(nodes, username='ec2-user', key_file=None, config=None):
             mkdir -p /home/{deploy_user}/.ssh
             chmod 700 /home/{deploy_user}/.ssh
             if [ ! -f /home/{deploy_user}/.ssh/id_rsa ]; then
-                ssh-keygen -t rsa -b 4096 -f /home/{deploy_user}/.ssh/id_rsa -N ""
+                ssh-keygen -t rsa -b 4096 -f /home/{deploy_user}/.ssh/id_rsa -N "" -q
             fi
-            cat /home/{deploy_user}/.ssh/id_rsa.pub
         '
         """
         
-        pub_key = execute_remote_command(ssh, generate_key_script).strip()
+        # Generate key first
+        execute_remote_command(ssh, generate_key_script)
+        
+        # Then get the public key content separately
+        get_pubkey_script = f"sudo -u {deploy_user} cat /home/{deploy_user}/.ssh/id_rsa.pub"
+        pub_key_output = execute_remote_command(ssh, get_pubkey_script)
+        
+        # Extract only the public key line (starts with ssh-rsa, ssh-ed25519, etc.)
+        pub_key_lines = pub_key_output.strip().split('\n')
+        pub_key = None
+        for line in pub_key_lines:
+            line = line.strip()
+            if line.startswith(('ssh-rsa', 'ssh-ed25519', 'ssh-dss', 'ecdsa-sha2')):
+                pub_key = line
+                break
+        
+        if not pub_key:
+            raise Exception("Could not extract public key from ssh-keygen output")
+            
         logger.info("✓ SSH key generated for dolphinscheduler user")
         
     finally:
@@ -237,19 +256,50 @@ def setup_ssh_keys(nodes, username='ec2-user', key_file=None, config=None):
     def add_key_to_node(node):
         ssh = connect_ssh(node['host'], username, key_file, config=config)
         try:
-            add_key_script = f"""
+            # Create SSH directory first
+            setup_ssh_dir_script = f"""
             sudo -u {deploy_user} bash -c '
                 mkdir -p /home/{deploy_user}/.ssh
                 chmod 700 /home/{deploy_user}/.ssh
-                echo "{pub_key}" >> /home/{deploy_user}/.ssh/authorized_keys
-                chmod 600 /home/{deploy_user}/.ssh/authorized_keys
-                # Remove duplicates
-                sort /home/{deploy_user}/.ssh/authorized_keys | uniq > /home/{deploy_user}/.ssh/authorized_keys.tmp
-                mv /home/{deploy_user}/.ssh/authorized_keys.tmp /home/{deploy_user}/.ssh/authorized_keys
+                touch /home/{deploy_user}/.ssh/authorized_keys
                 chmod 600 /home/{deploy_user}/.ssh/authorized_keys
             '
             """
-            execute_remote_command(ssh, add_key_script)
+            execute_remote_command(ssh, setup_ssh_dir_script)
+            
+            # Add public key using a safer method (write to temp file first)
+            import tempfile
+            import os
+            
+            # Create a temporary file with the public key
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.pub') as temp_file:
+                temp_file.write(pub_key + '\n')
+                temp_local_path = temp_file.name
+            
+            try:
+                # Upload the public key file
+                temp_remote_path = f"/tmp/pubkey_{int(time.time())}.pub"
+                from src.deploy.ssh import upload_file
+                upload_file(ssh, temp_local_path, temp_remote_path)
+                
+                # Add the key to authorized_keys
+                add_key_script = f"""
+                sudo -u {deploy_user} bash -c '
+                    cat {temp_remote_path} >> /home/{deploy_user}/.ssh/authorized_keys
+                    # Remove duplicates
+                    sort /home/{deploy_user}/.ssh/authorized_keys | uniq > /home/{deploy_user}/.ssh/authorized_keys.tmp
+                    mv /home/{deploy_user}/.ssh/authorized_keys.tmp /home/{deploy_user}/.ssh/authorized_keys
+                    chmod 600 /home/{deploy_user}/.ssh/authorized_keys
+                '
+                # Clean up temp file
+                rm {temp_remote_path}
+                """
+                execute_remote_command(ssh, add_key_script)
+                
+            finally:
+                # Clean up local temp file
+                os.unlink(temp_local_path)
+            
             return node['host']
         finally:
             ssh.close()
