@@ -959,13 +959,17 @@ mybatis-plus:
                 perm_cmd = f"sudo chown -R {deploy_user}:{deploy_user} {install_path}/tools && sudo chmod -R 755 {install_path}/tools"
                 execute_remote_command(ssh, perm_cmd)
                 
-                # Run upgrade-schema.sh from tools/bin directory with proper environment
+                # Run upgrade-schema.sh from main bin directory with proper environment
                 # DolphinScheduler 3.3.2 requires specific environment setup
-                upgrade_cmd = f"""cd {install_path}/tools && \
+                upgrade_cmd = f"""cd {install_path} && \
 export DATABASE=mysql && \
+export SPRING_PROFILES_ACTIVE=mysql && \
+export SPRING_DATASOURCE_URL="jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?useUnicode=true&characterEncoding=UTF-8&useSSL=false" && \
+export SPRING_DATASOURCE_USERNAME="{db_config['username']}" && \
+export SPRING_DATASOURCE_PASSWORD="{password}" && \
 export JAVA_HOME={java_home} && \
 export DOLPHINSCHEDULER_HOME={install_path} && \
-export JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/tools/dump.hprof' && \
+export JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/logs/dump.hprof' && \
 sudo -u {deploy_user} bash bin/upgrade-schema.sh 2>&1"""
                 logger.info(f"Executing database initialization...")
                 logger.debug(f"Command: {upgrade_cmd}")
@@ -983,11 +987,15 @@ sudo -u {deploy_user} bash bin/upgrade-schema.sh 2>&1"""
                 execute_remote_command(ssh, perm_cmd)
                 
                 # Run with proper environment setup for DolphinScheduler 3.3.2
-                upgrade_cmd = f"""cd {install_path}/tools && \
+                upgrade_cmd = f"""cd {install_path} && \
 export DATABASE=mysql && \
+export SPRING_PROFILES_ACTIVE=mysql && \
+export SPRING_DATASOURCE_URL="jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?useUnicode=true&characterEncoding=UTF-8&useSSL=false" && \
+export SPRING_DATASOURCE_USERNAME="{db_config['username']}" && \
+export SPRING_DATASOURCE_PASSWORD="{password}" && \
 export JAVA_HOME={java_home} && \
 export DOLPHINSCHEDULER_HOME={install_path} && \
-export JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/tools/dump.hprof' && \
+export JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/logs/dump.hprof' && \
 sudo -u {deploy_user} bash bin/upgrade-schema.sh 2>&1"""
                 logger.info(f"Attempting database initialization (retry)...")
                 logger.debug(f"Retry command: {upgrade_cmd}")
