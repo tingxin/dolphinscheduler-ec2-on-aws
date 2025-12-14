@@ -1036,9 +1036,24 @@ echo "Script exists:" && ls -la bin/upgrade-schema.sh"""
                 logger.info(f"Environment check: {env_check}")
                 
                 output = execute_remote_command(ssh, upgrade_cmd, timeout=600)
-                logger.info(f"Database initialization output: {output}")
-                logger.info(f"Schema upgrade completed")
-                logger.info("✓ Database initialized successfully")
+                logger.info(f"Database initialization output:")
+                logger.info("=" * 60)
+                logger.info(output)
+                logger.info("=" * 60)
+                
+                # Check if initialization was successful by looking for success indicators
+                if "successfully" in output.lower() or "completed" in output.lower():
+                    logger.info("✓ Database initialized successfully")
+                else:
+                    logger.warning("Database initialization may have failed, checking output...")
+                    # Try to extract specific error information
+                    lines = output.split('\n')
+                    error_lines = [line for line in lines if 'error' in line.lower() or 'exception' in line.lower() or 'failed' in line.lower()]
+                    if error_lines:
+                        logger.error("Detected errors in database initialization:")
+                        for error_line in error_lines[:5]:  # Show first 5 error lines
+                            logger.error(f"  {error_line.strip()}")
+                    raise Exception(f"Database initialization failed with output: {output[-500:]}")  # Last 500 chars
         except Exception as e:
             logger.warning(f"Could not check database status: {e}")
             logger.info("Attempting to initialize database anyway...")
@@ -1072,9 +1087,24 @@ sudo -E -u {deploy_user} bash bin/upgrade-schema.sh 2>&1"""
                 execute_remote_command(ssh, chmod_cmd)
                 
                 output = execute_remote_command(ssh, upgrade_cmd, timeout=600)
-                logger.info(f"Database initialization retry output: {output}")
-                logger.info(f"Schema upgrade completed")
-                logger.info("✓ Database initialized")
+                logger.info(f"Database initialization retry output:")
+                logger.info("=" * 60)
+                logger.info(output)
+                logger.info("=" * 60)
+                
+                # Check if initialization was successful
+                if "successfully" in output.lower() or "completed" in output.lower():
+                    logger.info("✓ Database initialized successfully")
+                else:
+                    logger.error("Database initialization failed on retry")
+                    # Extract error information
+                    lines = output.split('\n')
+                    error_lines = [line for line in lines if 'error' in line.lower() or 'exception' in line.lower() or 'failed' in line.lower()]
+                    if error_lines:
+                        logger.error("Detected errors:")
+                        for error_line in error_lines[:5]:
+                            logger.error(f"  {error_line.strip()}")
+                    raise Exception(f"Database initialization retry failed: {output[-500:]}")
             except Exception as init_error:
                 logger.error(f"Failed to initialize database: {init_error}")
                 raise
