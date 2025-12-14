@@ -234,7 +234,7 @@ def status(config, detailed):
         # Service status
         click.echo("\n🔍 Service Status:")
         try:
-            from src.deploy.installer import check_service_status
+            from src.deploy.service_manager import check_service_status
             
             status_result = check_service_status(cfg)
             

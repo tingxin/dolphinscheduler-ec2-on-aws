@@ -5,15 +5,15 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.aws.ec2 import create_instances_parallel, wait_for_service_ready
 from src.deploy.ssh import wait_for_ssh
-from src.deploy.installer import (
-    download_dolphinscheduler,
+from src.deploy.node_initializer import (
     initialize_node,
     create_deployment_user,
     setup_ssh_keys,
     configure_hosts_file,
-    deploy_dolphinscheduler,
-    start_services
+    initialize_nodes_parallel,
+    create_users_parallel
 )
+from src.deploy.service_manager import start_services
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -222,11 +222,11 @@ def create_cluster(config):
         
         logger.info("\nInstalling system dependencies...")
         max_workers = config.get('deployment', {}).get('parallel_init_workers', 10)
-        initialize_nodes_parallel(all_hosts, state, max_workers=max_workers)
+        initialize_nodes_parallel(all_hosts, max_workers=max_workers, config=config)
         
         logger.info("\nCreating deployment user...")
         deploy_user = config['deployment']['user']
-        create_users_parallel(all_hosts, deploy_user)
+        create_users_parallel(all_hosts, deploy_user, max_workers=max_workers, config=config)
         
         logger.info("✓ All nodes initialized")
         
@@ -247,10 +247,10 @@ def create_cluster(config):
                 })
         
         logger.info("\nSetting up SSH keys...")
-        setup_ssh_keys(all_nodes)
+        setup_ssh_keys(all_nodes, config=config)
         
         logger.info("\nConfiguring /etc/hosts...")
-        configure_hosts_file(all_nodes)
+        configure_hosts_file(all_nodes, config=config)
         
         logger.info("✓ Cluster configured")
         
@@ -267,14 +267,15 @@ def create_cluster(config):
         if download_on_remote:
             logger.info(f"\nDolphinScheduler {version} will be downloaded directly on target node...")
             logger.info("\nDeploying to cluster...")
-            from src.deploy.installer import deploy_dolphinscheduler_v320
+            from src.deploy.installer_v320 import deploy_dolphinscheduler_v320
             deploy_dolphinscheduler_v320(config, package_file=None)
         else:
             logger.info(f"\nDownloading DolphinScheduler {version} on local machine...")
             download_url = config.get('advanced', {}).get('download_url')
+            from src.deploy.package_manager import download_dolphinscheduler
             package_file = download_dolphinscheduler(version, download_url=download_url)
             logger.info("\nDeploying to cluster...")
-            from src.deploy.installer import deploy_dolphinscheduler_v320
+            from src.deploy.installer_v320 import deploy_dolphinscheduler_v320
             deploy_dolphinscheduler_v320(config, package_file=package_file)
         
         logger.info("✓ DolphinScheduler deployed")
