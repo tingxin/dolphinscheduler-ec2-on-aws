@@ -352,7 +352,22 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
             
             logger.info(f"Deploying {component} to {host}...")
             
-            node_ssh = connect_ssh(host, username, key_file, config=config)
+            # Connect with retry mechanism for better reliability
+            max_retries = 3
+            node_ssh = None
+            for attempt in range(max_retries):
+                try:
+                    node_ssh = connect_ssh(host, username, key_file, config=config)
+                    # Test connection
+                    node_ssh.exec_command('echo "connection test"', timeout=10)
+                    break
+                except Exception as e:
+                    logger.warning(f"SSH connection attempt {attempt + 1}/{max_retries} to {host} failed: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(5)
+                    else:
+                        raise Exception(f"Failed to establish SSH connection to {host} after {max_retries} attempts")
+            
             try:
                 # Create install directory
                 execute_remote_command(node_ssh, f"sudo mkdir -p {config['deployment']['install_path']}")
@@ -378,13 +393,45 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                     mkdir -p $TEMP_DIR
                     cd $TEMP_DIR
                     
-                    # Download DolphinScheduler package
+                    # Download DolphinScheduler package with better error handling
                     echo "Downloading from {download_url}..."
-                    wget -q --timeout=300 --tries=3 "{download_url}" -O apache-dolphinscheduler-3.2.0-bin.tar.gz
+                    echo "This may take a few minutes, please wait..."
+                    
+                    # Try multiple download methods for better reliability
+                    DOWNLOAD_SUCCESS=false
+                    
+                    # Method 1: wget with progress and longer timeout
+                    if wget --progress=dot:giga --timeout=600 --tries=2 --retry-connrefused --waitretry=10 "{download_url}" -O apache-dolphinscheduler-3.2.0-bin.tar.gz 2>&1; then
+                        DOWNLOAD_SUCCESS=true
+                        echo "✓ Download completed with wget"
+                    else
+                        echo "⚠ wget failed, trying curl..."
+                        # Method 2: curl as fallback
+                        if curl -L --connect-timeout 30 --max-time 600 --retry 2 --retry-delay 10 "{download_url}" -o apache-dolphinscheduler-3.2.0-bin.tar.gz; then
+                            DOWNLOAD_SUCCESS=true
+                            echo "✓ Download completed with curl"
+                        else
+                            echo "✗ Both wget and curl failed"
+                            exit 1
+                        fi
+                    fi
+                    
+                    # Verify download
+                    if [ ! -f apache-dolphinscheduler-3.2.0-bin.tar.gz ] || [ ! -s apache-dolphinscheduler-3.2.0-bin.tar.gz ]; then
+                        echo "✗ Download verification failed - file is missing or empty"
+                        exit 1
+                    fi
+                    
+                    echo "✓ Download verified, file size: $(du -h apache-dolphinscheduler-3.2.0-bin.tar.gz | cut -f1)"
                     
                     # Extract package
                     echo "Extracting package..."
-                    tar -xzf apache-dolphinscheduler-3.2.0-bin.tar.gz
+                    if tar -xzf apache-dolphinscheduler-3.2.0-bin.tar.gz; then
+                        echo "✓ Package extracted successfully"
+                    else
+                        echo "✗ Package extraction failed"
+                        exit 1
+                    fi
                     
                     # Copy to install path
                     echo "Installing to {config['deployment']['install_path']}..."
