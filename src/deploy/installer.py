@@ -894,7 +894,43 @@ export DOLPHINSCHEDULER_HOME={install_path}
                 logger.warning(f"Failed to clean up temp file: {e}")
         
         # ========================================================================
-        # STEP 2: Initialize database (now JAVA_HOME is available)
+        # STEP 2: Download and install MySQL JDBC driver (required for database initialization)
+        # ========================================================================
+        logger.info("Installing MySQL JDBC driver...")
+        
+        # Download MySQL Connector/J
+        mysql_driver_url = "https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.33/mysql-connector-java-8.0.33.jar"
+        download_driver_cmd = f"""
+        cd /tmp && \
+        wget -O mysql-connector-java-8.0.33.jar {mysql_driver_url} && \
+        sudo cp mysql-connector-java-8.0.33.jar {install_path}/libs/ && \
+        sudo chown {deploy_user}:{deploy_user} {install_path}/libs/mysql-connector-java-8.0.33.jar && \
+        ls -la {install_path}/libs/mysql-connector-java-8.0.33.jar
+        """
+        
+        try:
+            driver_output = execute_remote_command(ssh, download_driver_cmd)
+            logger.info(f"MySQL JDBC driver installed: {driver_output}")
+        except Exception as e:
+            logger.warning(f"Failed to download MySQL driver from Maven, trying alternative...")
+            # Try alternative download
+            alt_driver_url = "https://dev.mysql.com/get/Downloads/Connector-J/mysql-connector-j-8.0.33.jar"
+            alt_download_cmd = f"""
+            cd /tmp && \
+            wget -O mysql-connector-j-8.0.33.jar {alt_driver_url} && \
+            sudo cp mysql-connector-j-8.0.33.jar {install_path}/libs/ && \
+            sudo chown {deploy_user}:{deploy_user} {install_path}/libs/mysql-connector-j-8.0.33.jar && \
+            ls -la {install_path}/libs/mysql-connector-j-8.0.33.jar
+            """
+            try:
+                alt_output = execute_remote_command(ssh, alt_download_cmd)
+                logger.info(f"MySQL JDBC driver installed (alternative): {alt_output}")
+            except Exception as alt_e:
+                logger.error(f"Failed to install MySQL JDBC driver: {alt_e}")
+                raise Exception("Could not install MySQL JDBC driver. Database initialization will fail.")
+        
+        # ========================================================================
+        # STEP 3: Initialize database (now JAVA_HOME and JDBC driver are available)
         # ========================================================================
         logger.info("Preparing database initialization...")
         db_config = config['database']
