@@ -362,40 +362,61 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                 execute_remote_command(node_ssh, f"sudo mkdir -p {config['deployment']['install_path']}")
                 execute_remote_command(node_ssh, f"sudo chown {deploy_user}:{deploy_user} {config['deployment']['install_path']}")
                 
-                # Copy files to install directory
+                # Deploy files to install directory
                 if host == first_master:
                     # Move from temp to install path on first master
                     copy_cmd = f"sudo -u {deploy_user} cp -r {extract_dir}/* {config['deployment']['install_path']}/"
                 else:
-                    # Copy from first master node using ec2-user with sudo
-                    # This is more reliable than dolphinscheduler user SSH
+                    # Download and extract DolphinScheduler on each node individually
+                    # This avoids SSH key issues between nodes
+                    download_url = config.get('advanced', {}).get('download_url', 
+                        'https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz')
+                    
                     copy_cmd = f"""
                     set -e  # Exit on any error
                     
-                    echo "Copying DolphinScheduler files from first master node..."
+                    echo "Downloading and extracting DolphinScheduler on {host}..."
                     
                     # Create temp directory
-                    mkdir -p /tmp/ds_files
+                    TEMP_DIR="/tmp/ds_download_$(date +%s)"
+                    mkdir -p $TEMP_DIR
+                    cd $TEMP_DIR
                     
-                    # Use ec2-user to copy files, then change ownership
-                    scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 -r ec2-user@{first_master}:{extract_dir}/* /tmp/ds_files/
+                    # Download DolphinScheduler package
+                    echo "Downloading from {download_url}..."
+                    wget -q --timeout=300 --tries=3 "{download_url}" -O apache-dolphinscheduler-3.2.0-bin.tar.gz
                     
-                    # Move files to install path with correct ownership
-                    sudo mkdir -p {config["deployment"]["install_path"]}
-                    sudo cp -r /tmp/ds_files/* {config["deployment"]["install_path"]}/
-                    sudo chown -R {deploy_user}:{deploy_user} {config["deployment"]["install_path"]}
+                    # Extract package
+                    echo "Extracting package..."
+                    tar -xzf apache-dolphinscheduler-3.2.0-bin.tar.gz
+                    
+                    # Copy to install path
+                    echo "Installing to {config['deployment']['install_path']}..."
+                    sudo mkdir -p {config['deployment']['install_path']}
+                    sudo cp -r apache-dolphinscheduler-3.2.0-bin/* {config['deployment']['install_path']}/
+                    sudo chown -R {deploy_user}:{deploy_user} {config['deployment']['install_path']}
                     
                     # Clean up temp files
-                    rm -rf /tmp/ds_files
+                    cd /
+                    rm -rf $TEMP_DIR
                     
-                    echo "✓ Files copied successfully from first master"
+                    echo "✓ DolphinScheduler installed successfully on {host}"
                     """
                 
-                execute_remote_command(node_ssh, copy_cmd, timeout=300)
+                execute_remote_command(node_ssh, copy_cmd, timeout=600)  # Increased timeout for download
                 
                 # Set permissions
                 execute_remote_command(node_ssh, f"sudo chown -R {deploy_user}:{deploy_user} {config['deployment']['install_path']}")
                 execute_remote_command(node_ssh, f"sudo chmod +x {config['deployment']['install_path']}/bin/*.sh")
+                
+                # Install MySQL JDBC driver on each node
+                logger.debug(f"Installing MySQL JDBC driver on {host}...")
+                install_mysql_jdbc_driver(node_ssh, config['deployment']['install_path'], deploy_user)
+                
+                # Upload configuration files to each node
+                logger.debug(f"Uploading configuration files to {host}...")
+                upload_configuration_files(node_ssh, config, config['deployment']['install_path'])
+                configure_components(node_ssh, config, config['deployment']['install_path'])
                 
                 return f"✓ Deployed {component} to {host}"
                 
