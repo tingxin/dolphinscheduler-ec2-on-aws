@@ -225,6 +225,3 @@ mysql -h your-rds-endpoint.rds.amazonaws.com -u dolphinscheduler -p
 
 详细设计和实现请参考 [DESIGN.md](DESIGN.md)
 
-## License
-
-Apache License 2.0
