@@ -922,15 +922,21 @@ mybatis-plus:
             )
             cursor = conn.cursor()
             
-            # Create database if not exists
+            # Try to create database if not exists (may fail if user lacks privileges)
             database_name = db_config['database']
-            cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{database_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
-            logger.info(f"✓ Database '{database_name}' ready")
+            try:
+                cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{database_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+                logger.info(f"✓ Database '{database_name}' created/verified")
+            except Exception as e:
+                logger.warning(f"Could not create database (may already exist): {e}")
             
-            # Grant permissions (if needed)
-            cursor.execute(f"GRANT ALL PRIVILEGES ON `{database_name}`.* TO '{db_config['username']}'@'%'")
-            cursor.execute("FLUSH PRIVILEGES")
-            logger.info("✓ Database permissions configured")
+            # Try to grant permissions (may fail if user lacks privileges)
+            try:
+                cursor.execute(f"GRANT ALL PRIVILEGES ON `{database_name}`.* TO '{db_config['username']}'@'%'")
+                cursor.execute("FLUSH PRIVILEGES")
+                logger.info("✓ Database permissions configured")
+            except Exception as e:
+                logger.warning(f"Could not grant permissions (may already be set): {e}")
             
             conn.close()
             
