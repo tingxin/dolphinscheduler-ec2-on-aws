@@ -1,6 +1,7 @@
 """
 Create cluster command implementation
 """
+import time
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.aws.ec2 import create_instances_parallel, wait_for_service_ready
@@ -9,9 +10,7 @@ from src.deploy.node_initializer import (
     initialize_node,
     create_deployment_user,
     setup_ssh_keys,
-    configure_hosts_file,
-    initialize_nodes_parallel,
-    create_users_parallel
+    configure_hosts_file
 )
 from src.deploy.service_manager import start_services
 from src.utils.logger import setup_logger
@@ -42,19 +41,20 @@ def wait_for_ssh_parallel(hosts, max_workers=10):
                     raise
 
 
-def initialize_nodes_parallel(hosts, state, max_workers=10):
+def initialize_nodes_parallel_with_state(hosts, state, max_workers=10, config=None):
     """
-    Initialize multiple nodes in parallel
+    Initialize multiple nodes in parallel with state tracking
     
     Args:
         hosts: List of host addresses
         state: Deployment state
         max_workers: Maximum parallel workers
+        config: Configuration dictionary
     """
     logger.info(f"Initializing {len(hosts)} nodes in parallel (max {max_workers} concurrent)...")
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(initialize_node, host): host for host in hosts}
+        futures = {executor.submit(initialize_node, host, config=config): host for host in hosts}
         
         completed = 0
         with tqdm(total=len(hosts), desc="Node initialization", unit="node") as pbar:
@@ -71,17 +71,18 @@ def initialize_nodes_parallel(hosts, state, max_workers=10):
                     raise
 
 
-def create_users_parallel(hosts, deploy_user, max_workers=10):
+def create_users_parallel_local(hosts, deploy_user, max_workers=10, config=None):
     """
-    Create deployment user on multiple nodes in parallel
+    Create deployment user on multiple nodes in parallel (local version)
     
     Args:
         hosts: List of host addresses
         deploy_user: Deployment user name
         max_workers: Maximum parallel workers
+        config: Configuration dictionary
     """
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(create_deployment_user, host, deploy_user=deploy_user): host for host in hosts}
+        futures = {executor.submit(create_deployment_user, host, deploy_user=deploy_user, config=config): host for host in hosts}
         
         with tqdm(total=len(hosts), desc="Creating users") as pbar:
             for future in as_completed(futures):
@@ -222,11 +223,11 @@ def create_cluster(config):
         
         logger.info("\nInstalling system dependencies...")
         max_workers = config.get('deployment', {}).get('parallel_init_workers', 10)
-        initialize_nodes_parallel(all_hosts, max_workers=max_workers, config=config)
+        initialize_nodes_parallel_with_state(all_hosts, state, max_workers=max_workers, config=config)
         
         logger.info("\nCreating deployment user...")
         deploy_user = config['deployment']['user']
-        create_users_parallel(all_hosts, deploy_user, max_workers=max_workers, config=config)
+        create_users_parallel_local(all_hosts, deploy_user, max_workers=max_workers, config=config)
         
         logger.info("✓ All nodes initialized")
         
@@ -267,7 +268,7 @@ def create_cluster(config):
         if download_on_remote:
             logger.info(f"\nDolphinScheduler {version} will be downloaded directly on target node...")
             logger.info("\nDeploying to cluster...")
-            from src.deploy.installer_v320 import deploy_dolphinscheduler_v320
+            from src.deploy.installer import deploy_dolphinscheduler_v320
             deploy_dolphinscheduler_v320(config, package_file=None)
         else:
             logger.info(f"\nDownloading DolphinScheduler {version} on local machine...")
@@ -275,7 +276,7 @@ def create_cluster(config):
             from src.deploy.package_manager import download_dolphinscheduler
             package_file = download_dolphinscheduler(version, download_url=download_url)
             logger.info("\nDeploying to cluster...")
-            from src.deploy.installer_v320 import deploy_dolphinscheduler_v320
+            from src.deploy.installer import deploy_dolphinscheduler_v320
             deploy_dolphinscheduler_v320(config, package_file=package_file)
         
         logger.info("✓ DolphinScheduler deployed")
