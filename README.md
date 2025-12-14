@@ -87,7 +87,7 @@ DS_VERSION=3.2.0
 部署前先验证配置文件是否正确：
 
 ```bash
-python cli.py validate --config my-cluster.yaml
+python cli.py validate --config config.yaml
 ```
 
 此命令会检查：

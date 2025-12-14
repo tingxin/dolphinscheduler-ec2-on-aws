@@ -948,6 +948,77 @@ dolphinscheduler-datasource-mysql
             os.remove(temp_plugins_config)
             logger.info("✓ Plugins configuration created")
             
+            # Check and fix Maven wrapper before running install-plugins.sh
+            logger.info("Checking Maven wrapper configuration...")
+            
+            # Check if Maven wrapper files exist
+            check_mvnw_cmd = f"""
+            cd {install_path}
+            
+            echo "Checking Maven wrapper files..."
+            if [ ! -f .mvn/wrapper/maven-wrapper.properties ] || [ ! -f .mvn/wrapper/maven-wrapper.jar ]; then
+                echo "Maven wrapper files missing, attempting to fix..."
+                
+                # Create .mvn/wrapper directory if not exists
+                mkdir -p .mvn/wrapper
+                
+                # Download Maven wrapper files
+                echo "Downloading Maven wrapper files..."
+                
+                # Try to download maven-wrapper.properties
+                if ! wget -O .mvn/wrapper/maven-wrapper.properties "https://repo.maven.apache.org/maven2/org/apache/maven/wrapper/maven-wrapper/3.2.0/maven-wrapper-3.2.0.properties" 2>/dev/null; then
+                    # Create a basic maven-wrapper.properties
+                    cat > .mvn/wrapper/maven-wrapper.properties << 'EOF'
+distributionUrl=https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.8.8/apache-maven-3.8.8-bin.zip
+wrapperUrl=https://repo.maven.apache.org/maven2/org/apache/maven/wrapper/maven-wrapper/3.2.0/maven-wrapper-3.2.0.jar
+EOF
+                    echo "Created basic maven-wrapper.properties"
+                fi
+                
+                # Try to download maven-wrapper.jar
+                if ! wget -O .mvn/wrapper/maven-wrapper.jar "https://repo.maven.apache.org/maven2/org/apache/maven/wrapper/maven-wrapper/3.2.0/maven-wrapper-3.2.0.jar" 2>/dev/null; then
+                    if ! curl -L -o .mvn/wrapper/maven-wrapper.jar "https://repo.maven.apache.org/maven2/org/apache/maven/wrapper/maven-wrapper/3.2.0/maven-wrapper-3.2.0.jar" 2>/dev/null; then
+                        echo "Failed to download maven-wrapper.jar, trying alternative approach..."
+                        
+                        # Alternative: skip Maven wrapper and use system Maven if available
+                        if command -v mvn >/dev/null 2>&1; then
+                            echo "System Maven found, will use it instead of wrapper"
+                            # Create a simple mvnw script that uses system Maven
+                            cat > mvnw << 'EOF'
+#!/bin/bash
+exec mvn "$@"
+EOF
+                            chmod +x mvnw
+                        else
+                            echo "No Maven available, plugin installation may fail"
+                        fi
+                    else
+                        echo "Downloaded maven-wrapper.jar with curl"
+                    fi
+                else
+                    echo "Downloaded maven-wrapper.jar with wget"
+                fi
+                
+                # Set proper permissions
+                chmod +x mvnw 2>/dev/null || true
+                chown -R {deploy_user}:{deploy_user} .mvn/ 2>/dev/null || true
+                
+            else
+                echo "Maven wrapper files exist"
+            fi
+            
+            # Verify Maven wrapper
+            echo "Verifying Maven wrapper..."
+            ls -la .mvn/wrapper/ 2>/dev/null || echo "No .mvn/wrapper directory"
+            ls -la mvnw 2>/dev/null || echo "No mvnw script"
+            """
+            
+            try:
+                mvnw_output = execute_remote_command(ssh, check_mvnw_cmd)
+                logger.info(f"Maven wrapper check output: {mvnw_output}")
+            except Exception as e:
+                logger.warning(f"Maven wrapper check failed: {e}")
+            
             # Run install-plugins.sh script with extended timeout
             logger.info("Running install-plugins.sh script (this may take several minutes)...")
             install_plugins_cmd = f"cd {install_path} && sudo -u {deploy_user} bash bin/install-plugins.sh {version}"
@@ -985,13 +1056,73 @@ dolphinscheduler-datasource-mysql
                     logger.info("Attempting manual MySQL JDBC driver installation as fallback...")
                 
                 # Fallback: manually install MySQL JDBC driver
-                mysql_driver_url = "https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.33/mysql-connector-java-8.0.33.jar"
+                # Use the correct URL for MySQL Connector/J 8.0.33
+                mysql_driver_urls = [
+                    "https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar",
+                    "https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.33/mysql-connector-java-8.0.33.jar",
+                    "https://central.sonatype.com/artifact/com.mysql/mysql-connector-j/8.0.33/jar"
+                ]
+                
                 download_driver_cmd = f"""
-                cd /tmp && \
-                wget -O mysql-connector-java-8.0.33.jar {mysql_driver_url} && \
-                sudo cp mysql-connector-java-8.0.33.jar {install_path}/libs/ && \
-                sudo chown {deploy_user}:{deploy_user} {install_path}/libs/mysql-connector-java-8.0.33.jar && \
-                ls -la {install_path}/libs/mysql-connector-java-8.0.33.jar
+                cd /tmp
+                
+                # Try multiple URLs for MySQL connector
+                DRIVER_DOWNLOADED=false
+                
+                # Try new MySQL Connector/J (recommended)
+                echo "Trying MySQL Connector/J 8.0.33..."
+                if wget -O mysql-connector-j-8.0.33.jar "https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar" 2>/dev/null; then
+                    sudo cp mysql-connector-j-8.0.33.jar {install_path}/libs/
+                    sudo chown {deploy_user}:{deploy_user} {install_path}/libs/mysql-connector-j-8.0.33.jar
+                    DRIVER_DOWNLOADED=true
+                    echo "✓ MySQL Connector/J downloaded successfully"
+                elif curl -L -o mysql-connector-j-8.0.33.jar "https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar" 2>/dev/null; then
+                    sudo cp mysql-connector-j-8.0.33.jar {install_path}/libs/
+                    sudo chown {deploy_user}:{deploy_user} {install_path}/libs/mysql-connector-j-8.0.33.jar
+                    DRIVER_DOWNLOADED=true
+                    echo "✓ MySQL Connector/J downloaded successfully with curl"
+                fi
+                
+                # Try older MySQL Connector/Java as fallback
+                if [ "$DRIVER_DOWNLOADED" = "false" ]; then
+                    echo "Trying older MySQL Connector/Java 8.0.32..."
+                    if wget -O mysql-connector-java-8.0.32.jar "https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.32/mysql-connector-java-8.0.32.jar" 2>/dev/null; then
+                        sudo cp mysql-connector-java-8.0.32.jar {install_path}/libs/
+                        sudo chown {deploy_user}:{deploy_user} {install_path}/libs/mysql-connector-java-8.0.32.jar
+                        DRIVER_DOWNLOADED=true
+                        echo "✓ MySQL Connector/Java 8.0.32 downloaded successfully"
+                    elif curl -L -o mysql-connector-java-8.0.32.jar "https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.32/mysql-connector-java-8.0.32.jar" 2>/dev/null; then
+                        sudo cp mysql-connector-java-8.0.32.jar {install_path}/libs/
+                        sudo chown {deploy_user}:{deploy_user} {install_path}/libs/mysql-connector-java-8.0.32.jar
+                        DRIVER_DOWNLOADED=true
+                        echo "✓ MySQL Connector/Java 8.0.32 downloaded successfully with curl"
+                    fi
+                fi
+                
+                # Final fallback - try 8.0.30
+                if [ "$DRIVER_DOWNLOADED" = "false" ]; then
+                    echo "Trying MySQL Connector/Java 8.0.30..."
+                    if wget -O mysql-connector-java-8.0.30.jar "https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.30/mysql-connector-java-8.0.30.jar" 2>/dev/null; then
+                        sudo cp mysql-connector-java-8.0.30.jar {install_path}/libs/
+                        sudo chown {deploy_user}:{deploy_user} {install_path}/libs/mysql-connector-java-8.0.30.jar
+                        DRIVER_DOWNLOADED=true
+                        echo "✓ MySQL Connector/Java 8.0.30 downloaded successfully"
+                    elif curl -L -o mysql-connector-java-8.0.30.jar "https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.30/mysql-connector-java-8.0.30.jar" 2>/dev/null; then
+                        sudo cp mysql-connector-java-8.0.30.jar {install_path}/libs/
+                        sudo chown {deploy_user}:{deploy_user} {install_path}/libs/mysql-connector-java-8.0.30.jar
+                        DRIVER_DOWNLOADED=true
+                        echo "✓ MySQL Connector/Java 8.0.30 downloaded successfully with curl"
+                    fi
+                fi
+                
+                if [ "$DRIVER_DOWNLOADED" = "false" ]; then
+                    echo "✗ Failed to download MySQL JDBC driver from all sources"
+                    exit 1
+                fi
+                
+                # List installed drivers
+                echo "Installed MySQL drivers:"
+                ls -la {install_path}/libs/mysql-connector-*.jar 2>/dev/null || echo "No MySQL drivers found"
                 """
                 
                 try:
