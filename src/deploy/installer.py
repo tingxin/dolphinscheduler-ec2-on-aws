@@ -959,9 +959,14 @@ mybatis-plus:
                 perm_cmd = f"sudo chown -R {deploy_user}:{deploy_user} {install_path}/tools && sudo chmod -R 755 {install_path}/tools"
                 execute_remote_command(ssh, perm_cmd)
                 
-                # Run upgrade-schema.sh from tools/bin directory
-                # Set DATABASE environment variable and simplified JVM options (compatible with Java 8/11/17)
-                upgrade_cmd = f"cd {install_path}/tools && DATABASE=mysql JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/tools/dump.hprof' bash bin/upgrade-schema.sh"
+                # Run upgrade-schema.sh from tools/bin directory with proper environment
+                # DolphinScheduler 3.3.2 requires specific environment setup
+                upgrade_cmd = f"""cd {install_path}/tools && \
+export DATABASE=mysql && \
+export JAVA_HOME={java_home} && \
+export DOLPHINSCHEDULER_HOME={install_path} && \
+export JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/tools/dump.hprof' && \
+sudo -u {deploy_user} bash bin/upgrade-schema.sh"""
                 output = execute_remote_command(ssh, upgrade_cmd, timeout=600)
                 logger.info(f"Schema upgrade completed")
                 logger.info("✓ Database initialized successfully")
@@ -974,8 +979,13 @@ mybatis-plus:
                 perm_cmd = f"sudo chown -R {deploy_user}:{deploy_user} {install_path}/tools && sudo chmod -R 755 {install_path}/tools"
                 execute_remote_command(ssh, perm_cmd)
                 
-                # Run with simplified JAVA_OPTS (compatible with Java 8/11/17)
-                upgrade_cmd = f"cd {install_path}/tools && DATABASE=mysql JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/tools/dump.hprof' bash bin/upgrade-schema.sh"
+                # Run with proper environment setup for DolphinScheduler 3.3.2
+                upgrade_cmd = f"""cd {install_path}/tools && \
+export DATABASE=mysql && \
+export JAVA_HOME={java_home} && \
+export DOLPHINSCHEDULER_HOME={install_path} && \
+export JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/tools/dump.hprof' && \
+sudo -u {deploy_user} bash bin/upgrade-schema.sh"""
                 output = execute_remote_command(ssh, upgrade_cmd, timeout=600)
                 logger.info(f"Schema upgrade completed")
                 logger.info("✓ Database initialized")
