@@ -966,8 +966,11 @@ export DATABASE=mysql && \
 export JAVA_HOME={java_home} && \
 export DOLPHINSCHEDULER_HOME={install_path} && \
 export JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/tools/dump.hprof' && \
-sudo -u {deploy_user} bash bin/upgrade-schema.sh"""
+sudo -u {deploy_user} bash bin/upgrade-schema.sh 2>&1"""
+                logger.info(f"Executing database initialization...")
+                logger.debug(f"Command: {upgrade_cmd}")
                 output = execute_remote_command(ssh, upgrade_cmd, timeout=600)
+                logger.info(f"Database initialization output: {output}")
                 logger.info(f"Schema upgrade completed")
                 logger.info("✓ Database initialized successfully")
         except Exception as e:
@@ -985,8 +988,11 @@ export DATABASE=mysql && \
 export JAVA_HOME={java_home} && \
 export DOLPHINSCHEDULER_HOME={install_path} && \
 export JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/tools/dump.hprof' && \
-sudo -u {deploy_user} bash bin/upgrade-schema.sh"""
+sudo -u {deploy_user} bash bin/upgrade-schema.sh 2>&1"""
+                logger.info(f"Attempting database initialization (retry)...")
+                logger.debug(f"Retry command: {upgrade_cmd}")
                 output = execute_remote_command(ssh, upgrade_cmd, timeout=600)
+                logger.info(f"Database initialization retry output: {output}")
                 logger.info(f"Schema upgrade completed")
                 logger.info("✓ Database initialized")
             except Exception as init_error:
