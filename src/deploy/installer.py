@@ -965,9 +965,9 @@ mybatis-plus:
                 perm_cmd = f"sudo chown -R {deploy_user}:{deploy_user} {install_path}/tools && sudo chmod -R 755 {install_path}/tools"
                 execute_remote_command(ssh, perm_cmd)
                 
-                # Run upgrade-schema.sh from main bin directory with proper environment
+                # Run upgrade-schema.sh from tools/bin directory with proper environment
                 # DolphinScheduler 3.3.2 requires specific environment setup
-                upgrade_cmd = f"""cd {install_path} && \
+                upgrade_cmd = f"""cd {install_path}/tools && \
 export DATABASE=mysql && \
 export SPRING_PROFILES_ACTIVE=mysql && \
 export SPRING_DATASOURCE_URL="jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?useUnicode=true&characterEncoding=UTF-8&useSSL=false" && \
@@ -993,7 +993,7 @@ sudo -u {deploy_user} bash bin/upgrade-schema.sh 2>&1"""
                 execute_remote_command(ssh, perm_cmd)
                 
                 # Run with proper environment setup for DolphinScheduler 3.3.2
-                upgrade_cmd = f"""cd {install_path} && \
+                upgrade_cmd = f"""cd {install_path}/tools && \
 export DATABASE=mysql && \
 export SPRING_PROFILES_ACTIVE=mysql && \
 export SPRING_DATASOURCE_URL="jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?useUnicode=true&characterEncoding=UTF-8&useSSL=false" && \
