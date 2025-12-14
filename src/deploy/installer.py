@@ -173,10 +173,20 @@ def initialize_node(host, username='ec2-user', key_file=None):
             # Install other packages
             echo "Installing other dependencies..."
             sudo dnf install -y --skip-broken \
-                mariadb105 \
+                mysql \
                 psmisc tar gzip wget curl nc \
                 python3 python3-pip \
                 sudo procps-ng
+            
+            # If mysql package not available, try mariadb as fallback
+            if ! command -v mysql >/dev/null 2>&1; then
+                echo "MySQL not found, installing MariaDB as fallback..."
+                sudo dnf install -y mariadb105
+                # Create mysql symlink for compatibility
+                if [ -f /usr/bin/mariadb ] && [ ! -f /usr/bin/mysql ]; then
+                    sudo ln -sf /usr/bin/mariadb /usr/bin/mysql
+                fi
+            fi
             
             # Verify MySQL client
             mysql --version 2>&1 | head -1
@@ -1000,19 +1010,55 @@ mybatis-plus:
                 perm_cmd = f"sudo chown -R {deploy_user}:{deploy_user} {install_path}/tools && sudo chmod -R 755 {install_path}/tools"
                 execute_remote_command(ssh, perm_cmd)
                 
-                # Run upgrade-schema.sh from tools/bin directory with proper environment
-                # DolphinScheduler 3.3.2 requires specific environment setup
-                upgrade_cmd = f"""cd {install_path}/tools && \
-export DATABASE=mysql && \
-export SPRING_PROFILES_ACTIVE=mysql && \
-export SPRING_DATASOURCE_URL="jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?useUnicode=true&characterEncoding=UTF-8&useSSL=false" && \
-export SPRING_DATASOURCE_USERNAME="{db_config['username']}" && \
-export SPRING_DATASOURCE_PASSWORD="{password}" && \
-export JAVA_HOME={java_home} && \
-export PATH=$JAVA_HOME/bin:$PATH && \
-export DOLPHINSCHEDULER_HOME={install_path} && \
-export JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/logs/dump.hprof' && \
-sudo -E -u {deploy_user} bash bin/upgrade-schema.sh 2>&1"""
+                # Create a wrapper script to ensure proper environment setup
+                # This approach is more reliable than complex sudo -E commands
+                wrapper_script = f"""#!/bin/bash
+set -e
+cd {install_path}/tools
+
+# Set environment variables
+export DATABASE=mysql
+export SPRING_PROFILES_ACTIVE=mysql
+export SPRING_DATASOURCE_URL="jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?useUnicode=true&characterEncoding=UTF-8&useSSL=false"
+export SPRING_DATASOURCE_USERNAME="{db_config['username']}"
+export SPRING_DATASOURCE_PASSWORD="{password}"
+export JAVA_HOME={java_home}
+export PATH=$JAVA_HOME/bin:$PATH
+export DOLPHINSCHEDULER_HOME={install_path}
+export JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/logs/dump.hprof'
+
+# Debug information
+echo "=== Environment Debug ==="
+echo "JAVA_HOME: $JAVA_HOME"
+echo "DATABASE: $DATABASE"
+echo "SPRING_DATASOURCE_URL: $SPRING_DATASOURCE_URL"
+echo "SPRING_DATASOURCE_USERNAME: $SPRING_DATASOURCE_USERNAME"
+echo "Working directory: $(pwd)"
+echo "Java version: $(java -version 2>&1 | head -1)"
+echo "MySQL version: $(mysql --version 2>&1 | head -1)"
+echo "========================="
+
+# Run the upgrade script
+bash bin/upgrade-schema.sh
+"""
+                
+                # Upload wrapper script
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+                    f.write(wrapper_script)
+                    temp_wrapper = f.name
+                
+                try:
+                    temp_remote_wrapper = "/tmp/db_init_wrapper.sh"
+                    upload_file(ssh, temp_wrapper, temp_remote_wrapper)
+                    
+                    # Make wrapper executable and run it
+                    execute_remote_command(ssh, f"chmod +x {temp_remote_wrapper}")
+                    upgrade_cmd = f"sudo -u {deploy_user} bash {temp_remote_wrapper} 2>&1"
+                    
+                    os.remove(temp_wrapper)
+                except Exception as e:
+                    logger.error(f"Failed to create wrapper script: {e}")
+                    raise
                 logger.info(f"Executing database initialization...")
                 logger.debug(f"Command: {upgrade_cmd}")
                 
@@ -1088,18 +1134,61 @@ echo "Script exists:" && ls -la bin/upgrade-schema.sh"""
                 perm_cmd = f"sudo chown -R {deploy_user}:{deploy_user} {install_path}/tools && sudo chmod -R 755 {install_path}/tools"
                 execute_remote_command(ssh, perm_cmd)
                 
-                # Run with proper environment setup for DolphinScheduler 3.3.2
-                upgrade_cmd = f"""cd {install_path}/tools && \
-export DATABASE=mysql && \
-export SPRING_PROFILES_ACTIVE=mysql && \
-export SPRING_DATASOURCE_URL="jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?useUnicode=true&characterEncoding=UTF-8&useSSL=false" && \
-export SPRING_DATASOURCE_USERNAME="{db_config['username']}" && \
-export SPRING_DATASOURCE_PASSWORD="{password}" && \
-export JAVA_HOME={java_home} && \
-export PATH=$JAVA_HOME/bin:$PATH && \
-export DOLPHINSCHEDULER_HOME={install_path} && \
-export JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/logs/dump.hprof' && \
-sudo -E -u {deploy_user} bash bin/upgrade-schema.sh 2>&1"""
+                # Create retry wrapper script with enhanced debugging
+                retry_wrapper_script = f"""#!/bin/bash
+set -e
+cd {install_path}/tools
+
+# Set environment variables
+export DATABASE=mysql
+export SPRING_PROFILES_ACTIVE=mysql
+export SPRING_DATASOURCE_URL="jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?useUnicode=true&characterEncoding=UTF-8&useSSL=false"
+export SPRING_DATASOURCE_USERNAME="{db_config['username']}"
+export SPRING_DATASOURCE_PASSWORD="{password}"
+export JAVA_HOME={java_home}
+export PATH=$JAVA_HOME/bin:$PATH
+export DOLPHINSCHEDULER_HOME={install_path}
+export JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/logs/dump.hprof'
+
+# Enhanced debug information
+echo "=== Retry Environment Debug ==="
+echo "JAVA_HOME: $JAVA_HOME"
+echo "DATABASE: $DATABASE"
+echo "SPRING_DATASOURCE_URL: $SPRING_DATASOURCE_URL"
+echo "SPRING_DATASOURCE_USERNAME: $SPRING_DATASOURCE_USERNAME"
+echo "Working directory: $(pwd)"
+echo "Java version: $(java -version 2>&1 | head -1)"
+echo "MySQL version: $(mysql --version 2>&1 | head -1)"
+echo "Script permissions: $(ls -la bin/upgrade-schema.sh)"
+echo "Available files in bin/: $(ls -la bin/)"
+echo "==============================="
+
+# Test database connectivity first
+echo "Testing database connectivity..."
+mysql -h {db_config['host']} -P {db_config.get('port', 3306)} -u {db_config['username']} -p{password} -e "SELECT 1;" {db_config['database']} || echo "Database connection test failed"
+
+# Run the upgrade script with verbose output
+echo "Running upgrade-schema.sh..."
+bash -x bin/upgrade-schema.sh
+"""
+                
+                # Upload retry wrapper script
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+                    f.write(retry_wrapper_script)
+                    temp_retry_wrapper = f.name
+                
+                try:
+                    temp_remote_retry_wrapper = "/tmp/db_init_retry_wrapper.sh"
+                    upload_file(ssh, temp_retry_wrapper, temp_remote_retry_wrapper)
+                    
+                    # Make wrapper executable and run it
+                    execute_remote_command(ssh, f"chmod +x {temp_remote_retry_wrapper}")
+                    upgrade_cmd = f"sudo -u {deploy_user} bash {temp_remote_retry_wrapper} 2>&1"
+                    
+                    os.remove(temp_retry_wrapper)
+                except Exception as e:
+                    logger.error(f"Failed to create retry wrapper script: {e}")
+                    raise
                 logger.info(f"Attempting database initialization (retry)...")
                 logger.debug(f"Retry command: {upgrade_cmd}")
                 
