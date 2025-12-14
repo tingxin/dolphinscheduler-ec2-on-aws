@@ -224,13 +224,13 @@ jvm:
 
 # ===== 其他配置（可选）=====
 advanced:
-  # 下载地址
-  # 清华镜像（推荐，中国访问快）
-  # download_url: https://mirrors.tuna.tsinghua.edu.cn/apache/dolphinscheduler/3.3.2/apache-dolphinscheduler-3.3.2-bin.tar.gz
-  # Apache 官方归档（备选）
-  download_url: https://archive.apache.org/dist/dolphinscheduler/3.3.2/apache-dolphinscheduler-3.3.2-bin.tar.gz
+  # 下载地址 - DolphinScheduler 3.2.0
+  # Apache 官方归档（推荐）
+  download_url: https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
+  # 清华镜像（备选，中国访问快）
+  # download_url: https://mirrors.tuna.tsinghua.edu.cn/apache/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
   # 华为云镜像（备选）
-  # download_url: https://repo.huaweicloud.com/apache/dolphinscheduler/3.3.2/apache-dolphinscheduler-3.3.2-bin.tar.gz
+  # download_url: https://repo.huaweicloud.com/apache/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
 
   # 日志配置
   logging:

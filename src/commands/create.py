@@ -267,13 +267,15 @@ def create_cluster(config):
         if download_on_remote:
             logger.info(f"\nDolphinScheduler {version} will be downloaded directly on target node...")
             logger.info("\nDeploying to cluster...")
-            deploy_dolphinscheduler(config, package_file=None)
+            from src.deploy.installer import deploy_dolphinscheduler_v320
+            deploy_dolphinscheduler_v320(config, package_file=None)
         else:
             logger.info(f"\nDownloading DolphinScheduler {version} on local machine...")
             download_url = config.get('advanced', {}).get('download_url')
             package_file = download_dolphinscheduler(version, download_url=download_url)
             logger.info("\nDeploying to cluster...")
-            deploy_dolphinscheduler(config, package_file=package_file)
+            from src.deploy.installer import deploy_dolphinscheduler_v320
+            deploy_dolphinscheduler_v320(config, package_file=package_file)
         
         logger.info("✓ DolphinScheduler deployed")
         

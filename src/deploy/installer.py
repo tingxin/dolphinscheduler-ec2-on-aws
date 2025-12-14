@@ -400,9 +400,9 @@ EOF
     return True
 
 
-def generate_application_yaml(config, component='master'):
+def generate_application_yaml_v320(config, component='master'):
     """
-    Generate application.yaml for DolphinScheduler 3.3.2+ component
+    Generate application.yaml for DolphinScheduler 3.2.0 component
     
     Args:
         config: Configuration dictionary
@@ -413,17 +413,18 @@ def generate_application_yaml(config, component='master'):
     """
     db_config = config['database']
     registry_config = config['registry']
-    storage_config = config['storage']
     service_config = config.get('service_config', {}).get(component, {})
     
-    # Build database URL
-    db_url = f"jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?{db_config.get('params', 'useUnicode=true&characterEncoding=UTF-8')}"
+    # Build database URL with 3.2.0 compatible parameters
+    db_params = "useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true"
+    db_url = f"jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?{db_params}"
     
     # Build Zookeeper connection string
     zk_connect = ','.join(registry_config['servers'])
     
-    # Base configuration for all components
-    yaml_content = f"""spring:
+    # Base configuration for components that need database access
+    if component in ['master', 'api', 'alert']:
+        yaml_content = f"""spring:
   profiles:
     active: mysql
   banner:
@@ -439,36 +440,32 @@ def generate_application_yaml(config, component='master'):
     hikari:
       connection-test-query: select 1
       pool-name: DolphinScheduler
+      minimum-idle: 5
+      maximum-pool-size: 50
+      auto-commit: true
+      idle-timeout: 600000
+      pool-prepared-statements: true
+      max-prepared-statements-per-connection: 20
+      connection-timeout: 30000
+      connection-init-sql: SELECT 1
+      validation-timeout: 3000
+
+"""
+    else:
+        # Worker doesn't need database configuration in 3.2.0
+        yaml_content = f"""spring:
+  profiles:
+    active: mysql
+  banner:
+    charset: UTF-8
+  jackson:
+    time-zone: UTC
+    date-format: "yyyy-MM-dd HH:mm:ss"
+
 """
     
-    # Add Quartz configuration for master
-    if component == 'master':
-        yaml_content += """  quartz:
-    job-store-type: jdbc
-    jdbc:
-      initialize-schema: never
-    properties:
-      org.quartz.threadPool.threadPriority: 5
-      org.quartz.jobStore.isClustered: true
-      org.quartz.jobStore.class: org.springframework.scheduling.quartz.LocalDataSourceJobStore
-      org.quartz.scheduler.instanceId: AUTO
-      org.quartz.jobStore.tablePrefix: QRTZ_
-      org.quartz.jobStore.acquireTriggersWithinLock: true
-      org.quartz.scheduler.instanceName: DolphinScheduler
-      org.quartz.threadPool.class: org.quartz.simpl.SimpleThreadPool
-      org.quartz.jobStore.useProperties: false
-      org.quartz.threadPool.makeThreadsDaemons: true
-      org.quartz.threadPool.threadCount: 25
-      org.quartz.jobStore.misfireThreshold: 60000
-      org.quartz.scheduler.batchTriggerAcquisitionMaxCount: 25
-      org.quartz.scheduler.makeSchedulerThreadDaemon: true
-      org.quartz.jobStore.driverDelegateClass: org.quartz.impl.jdbcjobstore.StdJDBCDelegate
-      org.quartz.jobStore.clusterCheckinInterval: 5000
-"""
-    
-    # Add registry configuration
-    yaml_content += f"""
-registry:
+    # Add registry configuration for all components
+    yaml_content += f"""registry:
   type: {registry_config['type']}
   zookeeper:
     namespace: {registry_config.get('namespace', 'dolphinscheduler')}
@@ -479,74 +476,92 @@ registry:
       max-retries: {registry_config.get('retry', {}).get('max_retries', 5)}
     session-timeout: {registry_config.get('session_timeout', 60000)}ms
     connection-timeout: {registry_config.get('connection_timeout', 30000)}ms
+
 """
     
-    # Add component-specific configuration
+    # Add component-specific configuration for 3.2.0
     if component == 'master':
-        listen_port = service_config.get('listen_port', 5678)
-        yaml_content += f"""
-master:
-  listen-port: {listen_port}
-  max-heartbeat-interval: 10s
-  server-load-protection:
-    enabled: true
-    max-system-cpu-usage-percentage-thresholds: 0.8
-    max-jvm-cpu-usage-percentage-thresholds: 0.8
-    max-system-memory-usage-percentage-thresholds: 0.8
-    max-disk-usage-percentage-thresholds: 0.8
+        max_cpu_load = service_config.get('max_cpu_load_avg', 3)
+        reserved_memory = service_config.get('reserved_memory', 0.1)
+        max_waiting_time = service_config.get('max_waiting_time', '150s')
+        
+        yaml_content += f"""master:
+  listen-port: 5678
+  max-cpu-load-avg: {max_cpu_load}
+  reserved-memory: {reserved_memory}
+  max-waiting-time: {max_waiting_time}
+  heartbeat-interval: 10s
+  task-commit-retry-times: 5
+  task-commit-interval: 1000
+  state-wheel-interval: 5s
+  process-task-cleanup-time: 120s
 
-server:
-  port: {listen_port + 1}
 """
     
     elif component == 'worker':
-        listen_port = service_config.get('listen_port', 1234)
-        exec_threads = service_config.get('exec_threads', 100)
-        yaml_content += f"""
-worker:
-  listen-port: {listen_port}
-  exec-threads: {exec_threads}
-  max-heartbeat-interval: 10s
-  server-load-protection:
-    enabled: true
-    max-system-cpu-usage-percentage-thresholds: 0.8
-    max-jvm-cpu-usage-percentage-thresholds: 0.8
-    max-system-memory-usage-percentage-thresholds: 0.8
-    max-disk-usage-percentage-thresholds: 0.8
+        max_cpu_load = service_config.get('max_cpu_load_avg', 3)
+        reserved_memory = service_config.get('reserved_memory', 0.1)
+        max_waiting_time = service_config.get('max_waiting_time', '150s')
+        
+        yaml_content += f"""worker:
+  listen-port: 1234
+  max-cpu-load-avg: {max_cpu_load}
+  reserved-memory: {reserved_memory}
+  max-waiting-time: {max_waiting_time}
+  heartbeat-interval: 10s
+  host-weight: 100
+  tenant-auto-create: true
+  exec-threads: 100
 
-server:
-  port: {listen_port + 1}
 """
     
     elif component == 'api':
         api_port = service_config.get('port', 12345)
-        yaml_content += f"""
-server:
+        yaml_content += f"""server:
   port: {api_port}
+  servlet:
+    session:
+      timeout: 7200s
+    context-path: /dolphinscheduler
+  compression:
+    enabled: true
+    mime-types: text/html,text/xml,text/plain,text/css,text/javascript,application/javascript,application/json,application/xml
+  jetty:
+    max-http-post-size: 5000000
 
 management:
   endpoints:
     web:
       exposure:
         include: health,metrics,prometheus
+  endpoint:
+    health:
+      enabled: true
+      show-details: always
+  health:
+    db:
+      enabled: true
+    defaults:
+      enabled: false
+
 """
     
     elif component == 'alert':
-        alert_port = service_config.get('port', 50052)
-        yaml_content += f"""
-server:
-  port: {alert_port}
+        yaml_content += f"""server:
+  port: 50052
 
 alert:
-  wait-timeout: {service_config.get('wait_timeout', 5000)}
+  port: 50052
+  wait-timeout: 5000
+
 """
     
     return yaml_content
 
 
-def generate_install_config(config):
+def generate_install_env_v320(config):
     """
-    Generate DolphinScheduler install_config.conf
+    Generate install_env.sh for DolphinScheduler 3.2.0
     
     Args:
         config: Configuration dictionary
@@ -580,46 +595,152 @@ def generate_install_config(config):
     alert_ip = config['cluster']['alert']['nodes'][0]['host']
     all_ips.append(alert_ip)
     
-    # Generate configuration
-    db_config = config['database']
-    registry_config = config['registry']
-    storage_config = config['storage']
+    # Generate install_env.sh content for 3.2.0
     deployment_config = config['deployment']
+    registry_config = config['registry']
     
-    install_config = f"""# Database Configuration
-DATABASE_TYPE={db_config['type']}
-SPRING_DATASOURCE_URL="jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?{db_config.get('params', 'useUnicode=true&characterEncoding=UTF-8')}"
-SPRING_DATASOURCE_USERNAME={db_config['username']}
-SPRING_DATASOURCE_PASSWORD={db_config['password']}
+    install_env = f"""#!/bin/bash
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 
-# Registry Configuration
-REGISTRY_TYPE={registry_config['type']}
-REGISTRY_ZOOKEEPER_CONNECT_STRING="{','.join(registry_config['servers'])}"
-
-# Resource Storage Configuration
-RESOURCE_STORAGE_TYPE={storage_config['type']}
-RESOURCE_UPLOAD_PATH={storage_config.get('upload_path', '/dolphinscheduler')}
-AWS_REGION={storage_config['region']}
-RESOURCE_STORAGE_BUCKET_NAME={storage_config['bucket']}
-
-# Node Configuration
+# ---------------------------------------------------------
+# INSTALL MACHINE
+# ---------------------------------------------------------
+# A comma separated list of machine hostname or IP would be installed DolphinScheduler,
+# including master, worker, api, alert. If you want to deploy in pseudo-distributed
+# mode, just write a pseudo-distributed hostname
+# Example for hostnames: ips="ds1,ds2,ds3,ds4,ds5", Example for IPs: ips="192.168.8.1,192.168.8.2,192.168.8.3,192.168.8.4,192.168.8.5"
 ips="{','.join(all_ips)}"
+
+# Port of SSH protocol, default value is 22. For now we only support same port in all `ips` machine
+# modify it if you use different ssh port
+sshPort="22"
+
+# A comma separated list of machine hostname or IP would be installed Master server, it
+# must be a subset of configuration `ips`.
+# Example for hostnames: masters="ds1,ds2", Example for IPs: masters="192.168.8.1,192.168.8.2"
 masters="{','.join(master_ips)}"
+
+# A comma separated list of machine <hostname>:<workerGroup> or <IP>:<workerGroup>.All hostname or IP must be a
+# subset of configuration `ips`, And workerGroup have default value as `default`, but we recommend you declare behind the hosts
+# Example for hostnames: workers="ds1:default,ds2:default,ds3:default", Example for IPs: workers="192.168.8.1:default,192.168.8.2:default,192.168.8.3:default"
 workers="{','.join(worker_configs)}"
-apiServers="{','.join(api_ips)}"
+
+# A comma separated list of machine hostname or IP would be installed Alert server, it
+# must be a subset of configuration `ips`.
+# Example for hostname: alertServer="ds3", Example for IP: alertServer="192.168.8.3"
 alertServer="{alert_ip}"
 
-# Deployment Configuration
-deployUser="{deployment_config['user']}"
+# A comma separated list of machine hostname or IP would be installed API server, it
+# must be a subset of configuration `ips`.
+# Example for hostnames: apiServers="ds1", Example for IPs: apiServers="192.168.8.1"
+apiServers="{','.join(api_ips)}"
+
+# The directory to install DolphinScheduler for all machine we config above. It will automatically be created by `install.sh` script if not exists.
+# Do not set this configuration same as the current path (pwd). Do not add quotes to it if you using related path.
 installPath="{deployment_config['install_path']}"
+
+# The user to deploy DolphinScheduler for all machine we config above. For now user must create by yourself before running `install.sh`
+# script. The user needs to have sudo privileges and permissions to operate hdfs. If hdfs is enabled than the root directory needs
+# to be created by this user
+deployUser="{deployment_config['user']}"
+
+# The root of zookeeper, for now DolphinScheduler default registry server is zookeeper.
+zkRoot="{registry_config.get('namespace', '/dolphinscheduler')}"
 """
     
-    return install_config
+    return install_env
 
 
-def deploy_dolphinscheduler(config, package_file=None, username='ec2-user', key_file=None):
+def generate_dolphinscheduler_env_v320(config):
     """
-    Deploy DolphinScheduler to all nodes
+    Generate dolphinscheduler_env.sh for DolphinScheduler 3.2.0
+    
+    Args:
+        config: Configuration dictionary
+    
+    Returns:
+        Configuration content string
+    """
+    db_config = config['database']
+    registry_config = config['registry']
+    
+    # Build database URL with 3.2.0 compatible parameters
+    db_params = "useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true"
+    db_url = f"jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?{db_params}"
+    
+    # Build Zookeeper connection string
+    zk_connect = ','.join(registry_config['servers'])
+    
+    env_content = f"""#!/bin/bash
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+# JAVA_HOME, will use it to start DolphinScheduler server
+export JAVA_HOME=${{JAVA_HOME:-/usr/lib/jvm/java-1.8.0}}
+
+# Database related configuration, set database type, username and password
+export DATABASE=${{DATABASE:-mysql}}
+export SPRING_PROFILES_ACTIVE=${{DATABASE}}
+export SPRING_DATASOURCE_URL="{db_url}"
+export SPRING_DATASOURCE_USERNAME={db_config['username']}
+export SPRING_DATASOURCE_PASSWORD={db_config['password']}
+
+# DolphinScheduler server related configuration
+export SPRING_CACHE_TYPE=${{SPRING_CACHE_TYPE:-none}}
+export SPRING_JACKSON_TIME_ZONE=${{SPRING_JACKSON_TIME_ZONE:-UTC}}
+export MASTER_FETCH_COMMAND_NUM=${{MASTER_FETCH_COMMAND_NUM:-10}}
+
+# Registry center configuration, determines the type and link of the registry center
+export REGISTRY_TYPE=${{REGISTRY_TYPE:-zookeeper}}
+export REGISTRY_ZOOKEEPER_CONNECT_STRING=${{REGISTRY_ZOOKEEPER_CONNECT_STRING:-{zk_connect}}}
+
+# Tasks related configurations, need to change the configuration if you use the related tasks.
+export HADOOP_HOME=${{HADOOP_HOME:-/opt/soft/hadoop}}
+export HADOOP_CONF_DIR=${{HADOOP_CONF_DIR:-/opt/soft/hadoop/etc/hadoop}}
+export SPARK_HOME=${{SPARK_HOME:-/opt/soft/spark}}
+export PYTHON_LAUNCHER=${{PYTHON_LAUNCHER:-/usr/bin/python}}
+export HIVE_HOME=${{HIVE_HOME:-/opt/soft/hive}}
+export FLINK_HOME=${{FLINK_HOME:-/opt/soft/flink}}
+export DATAX_LAUNCHER=${{DATAX_LAUNCHER:-/opt/soft/datax/bin/datax.py}}
+
+export PATH=$HADOOP_HOME/bin:$SPARK_HOME/bin:$PYTHON_LAUNCHER:$JAVA_HOME/bin:$HIVE_HOME/bin:$FLINK_HOME/bin:$DATAX_LAUNCHER:$PATH
+"""
+    
+    return env_content
+
+
+def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user', key_file=None):
+    """
+    Deploy DolphinScheduler 3.2.0 to all nodes using the official install.sh script
     
     Args:
         config: Configuration dictionary
@@ -630,19 +751,20 @@ def deploy_dolphinscheduler(config, package_file=None, username='ec2-user', key_
     Returns:
         True if successful
     """
-    logger.info("Deploying DolphinScheduler...")
+    logger.info("Deploying DolphinScheduler 3.2.0...")
     
     # Get first master node for installation
     first_master = config['cluster']['master']['nodes'][0]['host']
     install_path = config['deployment']['install_path']
     version = config['deployment']['version']
+    deploy_user = config['deployment']['user']
     
     def get_ssh_connection():
         """Get SSH connection with retry mechanism"""
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                ssh = connect_ssh(first_master, username, key_file)
+                ssh = connect_ssh(first_master, username, key_file, config=config)
                 # Test connection
                 ssh.exec_command('echo "connection test"')
                 return ssh
@@ -657,40 +779,37 @@ def deploy_dolphinscheduler(config, package_file=None, username='ec2-user', key_
     
     try:
         remote_package = f"/tmp/apache-dolphinscheduler-{version}-bin.tar.gz"
+        extract_dir = f"/tmp/apache-dolphinscheduler-{version}-bin"
         
-        # Option 1: Download directly on remote node (faster, recommended)
+        # Step 1: Download and extract package
         if package_file is None or config.get('deployment', {}).get('download_on_remote', True):
-            logger.info("Downloading DolphinScheduler directly on target node...")
+            logger.info("Downloading DolphinScheduler 3.2.0 directly on target node...")
             
             # Get download URL
             download_url = config.get('advanced', {}).get('download_url')
             if not download_url:
-                # Use Apache official archive
                 download_url = f"https://archive.apache.org/dist/dolphinscheduler/{version}/apache-dolphinscheduler-{version}-bin.tar.gz"
             
             logger.info(f"Download URL: {download_url}")
             
-            # Download on remote
+            # Download and extract
             download_script = f"""
-            # Check if already downloaded
-            if [ -f {remote_package} ]; then
-                echo "Package already exists, verifying..."
-                if gzip -t {remote_package} 2>/dev/null; then
-                    echo "Package is valid, skipping download"
-                    exit 0
-                else
-                    echo "Package is corrupted, re-downloading..."
-                    rm -f {remote_package}
-                fi
+            # Check if already downloaded and extracted
+            if [ -d {extract_dir} ]; then
+                echo "Package already extracted, skipping download"
+                exit 0
             fi
             
             # Download
             echo "Downloading from {download_url}..."
+            cd /tmp
             wget -O {remote_package} {download_url} || curl -L -o {remote_package} {download_url}
             
-            # Verify
+            # Verify and extract
             if gzip -t {remote_package}; then
-                echo "Download successful and verified"
+                echo "Download successful, extracting..."
+                tar -xzf {remote_package} -C /tmp/
+                echo "Extraction completed"
             else
                 echo "Downloaded file is corrupted"
                 rm -f {remote_package}
@@ -699,72 +818,58 @@ def deploy_dolphinscheduler(config, package_file=None, username='ec2-user', key_
             """
             
             execute_script(ssh, download_script, sudo=False)
-            logger.info("✓ Package downloaded on remote node")
-            
-        # Option 2: Upload from local (fallback)
+            logger.info("✓ Package downloaded and extracted")
         else:
             logger.info("Uploading DolphinScheduler package from local...")
             upload_file(ssh, package_file, remote_package, show_progress=True)
             
-            # Verify uploaded file
-            logger.info("Verifying uploaded file...")
-            local_size = os.path.getsize(package_file)
-            remote_size_output = execute_remote_command(ssh, f"stat -c %s {remote_package}")
-            remote_size = int(remote_size_output.strip())
-            
-            if local_size != remote_size:
-                raise Exception(f"File size mismatch: local={local_size}, remote={remote_size}")
-            
-            logger.info(f"✓ File verified ({remote_size / 1024 / 1024:.1f} MB)")
-            
-            # Test if file is valid gzip
-            logger.info("Testing archive integrity...")
-            test_result = execute_remote_command(ssh, f"gzip -t {remote_package} && echo 'OK' || echo 'FAILED'")
-            if 'FAILED' in test_result:
-                raise Exception("Uploaded file is not a valid gzip archive")
-            logger.info("✓ Archive integrity verified")
+            # Extract
+            execute_remote_command(ssh, f"cd /tmp && tar -xzf {remote_package}")
+            logger.info("✓ Package uploaded and extracted")
         
-        # Extract package
-        logger.info("Extracting package...")
-        extract_dir = f"/tmp/dolphinscheduler-install"
-        execute_remote_command(ssh, f"rm -rf {extract_dir}")
-        execute_remote_command(ssh, f"mkdir -p {extract_dir}")
-        execute_remote_command(ssh, f"tar -xzf {remote_package} -C {extract_dir} --strip-components=1")
-        
-        # No need to generate install_config.conf for 3.3.2 (binary distribution)
-        logger.info("Preparing configuration files for DolphinScheduler 3.3.2...")
-        
-        # DolphinScheduler 3.3.2+ uses binary distribution (no install script needed)
-        # Just copy to install path and configure
-        logger.info(f"Installing DolphinScheduler to {install_path}...")
-        
-        deploy_user = config['deployment']['user']
-        
-        install_script = f"""
-        # Create install directory
-        sudo mkdir -p {install_path}
-        
-        # Copy files to install path
-        sudo cp -r {extract_dir}/* {install_path}/
-        
-        # Set ownership
-        sudo chown -R {deploy_user}:{deploy_user} {install_path}
+        # Step 2: Set ownership and permissions
+        logger.info("Setting up package permissions...")
+        setup_script = f"""
+        # Set ownership to deploy user
+        sudo chown -R {deploy_user}:{deploy_user} {extract_dir}
         
         # Make scripts executable
-        sudo chmod +x {install_path}/bin/*.sh
+        sudo chmod +x {extract_dir}/bin/*.sh
         
-        # Create necessary directories
-        sudo -u {deploy_user} mkdir -p {install_path}/logs
-        
-        # Verify installation
-        ls -la {install_path}
-        echo ""
-        echo "Installation completed to {install_path}"
+        # Verify extraction
+        ls -la {extract_dir}
         """
         
-        output = execute_script(ssh, install_script, sudo=False)
-        logger.info("Installation output:")
-        logger.info(output)
+        execute_script(ssh, setup_script, sudo=False)
+        logger.info("✓ Package permissions configured")
+        
+        # Step 3: Generate and upload install_env.sh
+        logger.info("Generating install_env.sh configuration...")
+        install_env_content = generate_install_env_v320(config)
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+            f.write(install_env_content)
+            temp_install_env = f.name
+        
+        try:
+            temp_remote_install_env = "/tmp/install_env.sh"
+            upload_file(ssh, temp_install_env, temp_remote_install_env)
+            
+            # Move to correct location
+            install_env_path = f"{extract_dir}/bin/env/install_env.sh"
+            execute_remote_command(ssh, f"sudo mv {temp_remote_install_env} {install_env_path}")
+            execute_remote_command(ssh, f"sudo chown {deploy_user}:{deploy_user} {install_env_path}")
+            execute_remote_command(ssh, f"sudo chmod +x {install_env_path}")
+            
+            os.remove(temp_install_env)
+            logger.info("✓ install_env.sh configured")
+        except Exception as e:
+            logger.error(f"Failed to upload install_env.sh: {e}")
+            raise
+        
+        # Step 4: Generate and upload dolphinscheduler_env.sh
+        logger.info("Generating dolphinscheduler_env.sh configuration...")
+        ds_env_content = generate_dolphinscheduler_env_v320(config)
         
         # ========================================================================
         # STEP 1: Configure dolphinscheduler_env.sh FIRST (contains JAVA_HOME)
@@ -1747,3 +1852,189 @@ def check_service_status(config, username='ec2-user', key_file=None):
         ssh.close()
     
     return status
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+            f.write(ds_env_content)
+            temp_ds_env = f.name
+        
+        try:
+            temp_remote_ds_env = "/tmp/dolphinscheduler_env.sh"
+            upload_file(ssh, temp_ds_env, temp_remote_ds_env)
+            
+            # Move to correct location
+            ds_env_path = f"{extract_dir}/bin/env/dolphinscheduler_env.sh"
+            execute_remote_command(ssh, f"sudo mv {temp_remote_ds_env} {ds_env_path}")
+            execute_remote_command(ssh, f"sudo chown {deploy_user}:{deploy_user} {ds_env_path}")
+            execute_remote_command(ssh, f"sudo chmod +x {ds_env_path}")
+            
+            os.remove(temp_ds_env)
+            logger.info("✓ dolphinscheduler_env.sh configured")
+        except Exception as e:
+            logger.error(f"Failed to upload dolphinscheduler_env.sh: {e}")
+            raise
+        
+        # Step 5: Install MySQL JDBC driver to all component libs directories
+        logger.info("Installing MySQL JDBC driver...")
+        
+        # Download MySQL JDBC driver
+        mysql_drivers = [
+            {
+                "url": "https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar",
+                "filename": "mysql-connector-j-8.0.33.jar"
+            },
+            {
+                "url": "https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.26/mysql-connector-java-8.0.26.jar",
+                "filename": "mysql-connector-java-8.0.26.jar"
+            }
+        ]
+        
+        driver_installed = False
+        for driver in mysql_drivers:
+            try:
+                logger.info(f"Downloading MySQL driver: {driver['url']}")
+                download_driver_cmd = f"""
+                cd /tmp && \
+                rm -f {driver['filename']} && \
+                (wget -O {driver['filename']} {driver['url']} || curl -L -o {driver['filename']} {driver['url']}) && \
+                # Copy to all component libs directories
+                sudo cp {driver['filename']} {extract_dir}/master-server/libs/ && \
+                sudo cp {driver['filename']} {extract_dir}/worker-server/libs/ && \
+                sudo cp {driver['filename']} {extract_dir}/api-server/libs/ && \
+                sudo cp {driver['filename']} {extract_dir}/alert-server/libs/ && \
+                sudo cp {driver['filename']} {extract_dir}/tools/libs/ && \
+                sudo chown {deploy_user}:{deploy_user} {extract_dir}/*/libs/{driver['filename']} && \
+                ls -la {extract_dir}/master-server/libs/{driver['filename']}
+                """
+                
+                driver_output = execute_remote_command(ssh, download_driver_cmd)
+                logger.info(f"✓ MySQL JDBC driver installed: {driver_output}")
+                driver_installed = True
+                break
+                
+            except Exception as driver_e:
+                logger.warning(f"Failed to download from {driver['url']}: {driver_e}")
+                continue
+        
+        if not driver_installed:
+            logger.error("Failed to install MySQL JDBC driver from all sources")
+            raise Exception("Could not install MySQL JDBC driver. Please check network connectivity.")
+        
+        # Step 6: Initialize database schema
+        logger.info("Initializing database schema...")
+        db_config = config['database']
+        
+        # Test database connectivity first
+        try:
+            import pymysql
+            password = str(db_config['password']) if db_config['password'] is not None else ''
+            
+            conn = pymysql.connect(
+                host=db_config['host'],
+                port=db_config.get('port', 3306),
+                user=db_config['username'],
+                password=password,
+                database=db_config['database'],
+                connect_timeout=10,
+                charset='utf8mb4'
+            )
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            conn.close()
+            logger.info("✓ Database connectivity verified")
+        except Exception as e:
+            logger.error(f"Database connection failed: {e}")
+            raise Exception(f"Cannot connect to database: {e}")
+        
+        # Run database initialization
+        init_db_cmd = f"cd {extract_dir} && sudo -u {deploy_user} bash tools/bin/upgrade-schema.sh"
+        
+        try:
+            db_output = execute_remote_command(ssh, init_db_cmd, timeout=300)
+            logger.info(f"Database initialization output: {db_output}")
+            
+            if "successfully" in db_output.lower() or "completed" in db_output.lower():
+                logger.info("✓ Database schema initialized successfully")
+            else:
+                logger.warning("Database initialization completed but check output for any issues")
+        except Exception as e:
+            logger.warning(f"Database initialization may have failed: {e}")
+            # Don't fail deployment, as database might already be initialized
+            logger.info("Continuing with deployment...")
+        
+        # Step 7: Generate application.yaml files for all components
+        logger.info("Generating component configuration files...")
+        
+        components = ['master', 'worker', 'api', 'alert']
+        component_dirs = {
+            'master': 'master-server',
+            'worker': 'worker-server', 
+            'api': 'api-server',
+            'alert': 'alert-server'
+        }
+        
+        for component in components:
+            try:
+                logger.info(f"Configuring {component} component...")
+                yaml_content = generate_application_yaml_v320(config, component)
+                
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+                    f.write(yaml_content)
+                    temp_yaml = f.name
+                
+                # Upload to component directory
+                temp_remote_yaml = f"/tmp/application_{component}.yaml"
+                upload_file(ssh, temp_yaml, temp_remote_yaml)
+                
+                # Move to final location
+                component_dir = component_dirs[component]
+                final_yaml_path = f"{extract_dir}/{component_dir}/conf/application.yaml"
+                execute_remote_command(ssh, f"sudo mv {temp_remote_yaml} {final_yaml_path}")
+                execute_remote_command(ssh, f"sudo chown {deploy_user}:{deploy_user} {final_yaml_path}")
+                
+                os.remove(temp_yaml)
+                logger.info(f"✓ {component} configuration completed")
+                
+            except Exception as e:
+                logger.error(f"Failed to configure {component}: {e}")
+                raise
+        
+        # Also configure tools/conf/application.yaml for database operations
+        logger.info("Configuring tools component...")
+        tools_yaml_content = generate_application_yaml_v320(config, 'master')  # Tools uses same config as master
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+            f.write(tools_yaml_content)
+            temp_tools_yaml = f.name
+        
+        try:
+            temp_remote_tools_yaml = "/tmp/application_tools.yaml"
+            upload_file(ssh, temp_tools_yaml, temp_remote_tools_yaml)
+            
+            tools_yaml_path = f"{extract_dir}/tools/conf/application.yaml"
+            execute_remote_command(ssh, f"sudo mv {temp_remote_tools_yaml} {tools_yaml_path}")
+            execute_remote_command(ssh, f"sudo chown {deploy_user}:{deploy_user} {tools_yaml_path}")
+            
+            os.remove(temp_tools_yaml)
+            logger.info("✓ Tools configuration completed")
+        except Exception as e:
+            logger.error(f"Failed to configure tools: {e}")
+            raise
+        
+        # Step 8: Run the install.sh script to deploy to all nodes
+        logger.info("Running install.sh to deploy to all cluster nodes...")
+        
+        install_cmd = f"cd {extract_dir} && sudo -u {deploy_user} bash bin/install.sh"
+        
+        try:
+            install_output = execute_remote_command(ssh, install_cmd, timeout=600)
+            logger.info(f"Install script output: {install_output}")
+            logger.info("✓ DolphinScheduler 3.2.0 installation completed")
+        except Exception as e:
+            logger.error(f"Installation script failed: {e}")
+            raise Exception(f"DolphinScheduler installation failed: {e}")
+        
+        logger.info("✓ DolphinScheduler 3.2.0 deployed successfully")
+        return True
+        
+    finally:
+        ssh.close()
