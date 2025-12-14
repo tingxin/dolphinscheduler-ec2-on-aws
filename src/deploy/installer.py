@@ -272,6 +272,80 @@ def upload_configuration_files(ssh, config, extract_dir):
     return True
 
 
+def upload_package_to_s3(config):
+    """
+    Upload DolphinScheduler package to S3 for faster distribution to nodes
+    
+    Args:
+        config: Configuration dictionary
+    
+    Returns:
+        S3 key if successful, None if failed
+    """
+    try:
+        s3_bucket = config.get('storage', {}).get('bucket')
+        if not s3_bucket:
+            logger.info("No S3 bucket configured, skipping S3 upload")
+            return None
+        
+        import boto3
+        from botocore.exceptions import ClientError
+        
+        s3_client = boto3.client('s3', region_name=config.get('aws', {}).get('region', 'us-east-1'))
+        s3_key = "dolphinscheduler/apache-dolphinscheduler-3.2.0-bin.tar.gz"
+        
+        # Check if file already exists in S3
+        try:
+            s3_client.head_object(Bucket=s3_bucket, Key=s3_key)
+            logger.info(f"✓ DolphinScheduler package already exists in S3: s3://{s3_bucket}/{s3_key}")
+            return s3_key
+        except ClientError as e:
+            if e.response['Error']['Code'] != '404':
+                raise
+        
+        # Download package locally first
+        download_url = config.get('advanced', {}).get('download_url', 
+            'https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz')
+        
+        logger.info("Downloading DolphinScheduler package to upload to S3...")
+        import requests
+        import tempfile
+        
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            response = requests.get(download_url, stream=True, timeout=600)
+            response.raise_for_status()
+            
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
+            
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    temp_file.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        percent = (downloaded / total_size) * 100
+                        if downloaded % (1024 * 1024) == 0:  # Log every MB
+                            logger.info(f"Downloaded {downloaded // (1024*1024)}MB / {total_size // (1024*1024)}MB ({percent:.1f}%)")
+            
+            temp_file_path = temp_file.name
+        
+        # Upload to S3
+        logger.info(f"Uploading package to S3: s3://{s3_bucket}/{s3_key}")
+        s3_client.upload_file(temp_file_path, s3_bucket, s3_key)
+        
+        # Clean up temp file
+        import os
+        os.unlink(temp_file_path)
+        
+        logger.info(f"✓ Package uploaded to S3 successfully")
+        return s3_key
+        
+    except Exception as e:
+        logger.warning(f"Failed to upload package to S3: {e}")
+        logger.info("Will fall back to direct download on each node")
+        return None
+
+
 def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user', key_file=None):
     """
     Deploy DolphinScheduler 3.2.0 to all nodes using the official install.sh script
@@ -311,6 +385,10 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
     ssh = get_ssh_connection()
     
     try:
+        # Step 0: Upload package to S3 for faster distribution (optional)
+        logger.info("Preparing package distribution...")
+        upload_package_to_s3(config)
+        
         # Step 1: Download and extract package
         if package_file is None or config.get('deployment', {}).get('download_on_remote', True):
             logger.info("Downloading DolphinScheduler 3.2.0 directly on target node...")
@@ -369,104 +447,134 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                         raise Exception(f"Failed to establish SSH connection to {host} after {max_retries} attempts")
             
             try:
-                # Create install directory
+                # Step 1: Create install directory
+                logger.info(f"[{host}] Creating install directory...")
                 execute_remote_command(node_ssh, f"sudo mkdir -p {config['deployment']['install_path']}")
                 execute_remote_command(node_ssh, f"sudo chown {deploy_user}:{deploy_user} {config['deployment']['install_path']}")
                 
-                # Deploy files to install directory
+                # Step 2: Deploy files to install directory
                 if host == first_master:
-                    # Move from temp to install path on first master
+                    logger.info(f"[{host}] Copying files from temp directory...")
                     copy_cmd = f"sudo -u {deploy_user} cp -r {extract_dir}/* {config['deployment']['install_path']}/"
+                    execute_remote_command(node_ssh, copy_cmd, timeout=120)
                 else:
-                    # Download and extract DolphinScheduler on each node individually
-                    # This avoids SSH key issues between nodes
-                    download_url = config.get('advanced', {}).get('download_url', 
-                        'https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz')
-                    
-                    copy_cmd = f"""
-                    set -e  # Exit on any error
-                    
-                    echo "Downloading and extracting DolphinScheduler on {host}..."
-                    
-                    # Create temp directory
-                    TEMP_DIR="/tmp/ds_download_$(date +%s)"
-                    mkdir -p $TEMP_DIR
-                    cd $TEMP_DIR
-                    
-                    # Download DolphinScheduler package with better error handling
-                    echo "Downloading from {download_url}..."
-                    echo "This may take a few minutes, please wait..."
-                    
-                    # Try multiple download methods for better reliability
-                    DOWNLOAD_SUCCESS=false
-                    
-                    # Method 1: wget with progress and longer timeout
-                    if wget --progress=dot:giga --timeout=600 --tries=2 --retry-connrefused --waitretry=10 "{download_url}" -O apache-dolphinscheduler-3.2.0-bin.tar.gz 2>&1; then
-                        DOWNLOAD_SUCCESS=true
-                        echo "✓ Download completed with wget"
-                    else
-                        echo "⚠ wget failed, trying curl..."
-                        # Method 2: curl as fallback
-                        if curl -L --connect-timeout 30 --max-time 600 --retry 2 --retry-delay 10 "{download_url}" -o apache-dolphinscheduler-3.2.0-bin.tar.gz; then
-                            DOWNLOAD_SUCCESS=true
-                            echo "✓ Download completed with curl"
+                    # Use S3 or first master as source for better efficiency
+                    s3_bucket = config.get('storage', {}).get('bucket')
+                    if s3_bucket:
+                        # Option 1: Download from S3 (if available)
+                        logger.info(f"[{host}] Downloading DolphinScheduler from S3...")
+                        s3_key = "dolphinscheduler/apache-dolphinscheduler-3.2.0-bin.tar.gz"
+                        
+                        # Step 2a: Download from S3
+                        download_cmd = f"""
+                        set -e
+                        echo "Downloading DolphinScheduler from S3..."
+                        TEMP_DIR="/tmp/ds_download_$(date +%s)"
+                        mkdir -p $TEMP_DIR
+                        cd $TEMP_DIR
+                        
+                        # Download from S3
+                        aws s3 cp s3://{s3_bucket}/{s3_key} apache-dolphinscheduler-3.2.0-bin.tar.gz --region {config.get('aws', {}).get('region', 'us-east-1')}
+                        echo "✓ Downloaded from S3"
+                        """
+                        execute_remote_command(node_ssh, download_cmd, timeout=300)
+                        
+                    else:
+                        # Option 2: Download from internet (fallback)
+                        logger.info(f"[{host}] Downloading DolphinScheduler from internet...")
+                        download_url = config.get('advanced', {}).get('download_url', 
+                            'https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz')
+                        
+                        # Step 2a: Create temp directory
+                        execute_remote_command(node_ssh, """
+                        TEMP_DIR="/tmp/ds_download_$(date +%s)"
+                        mkdir -p $TEMP_DIR
+                        cd $TEMP_DIR
+                        echo "Created temp directory: $TEMP_DIR"
+                        """, timeout=30)
+                        
+                        # Step 2b: Download package
+                        logger.info(f"[{host}] Downloading package (this may take a few minutes)...")
+                        download_cmd = f"""
+                        cd /tmp/ds_download_*
+                        echo "Starting download from {download_url}..."
+                        
+                        # Try wget first
+                        if wget --progress=dot:giga --timeout=600 --tries=2 "{download_url}" -O apache-dolphinscheduler-3.2.0-bin.tar.gz 2>&1; then
+                            echo "✓ Download completed with wget"
                         else
-                            echo "✗ Both wget and curl failed"
+                            echo "wget failed, trying curl..."
+                            if curl -L --connect-timeout 30 --max-time 600 --retry 2 "{download_url}" -o apache-dolphinscheduler-3.2.0-bin.tar.gz; then
+                                echo "✓ Download completed with curl"
+                            else
+                                echo "✗ Download failed"
+                                exit 1
+                            fi
+                        fi
+                        
+                        # Verify download
+                        if [ ! -f apache-dolphinscheduler-3.2.0-bin.tar.gz ] || [ ! -s apache-dolphinscheduler-3.2.0-bin.tar.gz ]; then
+                            echo "✗ Download verification failed"
                             exit 1
                         fi
-                    fi
+                        
+                        echo "✓ Download verified, size: $(du -h apache-dolphinscheduler-3.2.0-bin.tar.gz | cut -f1)"
+                        """
+                        execute_remote_command(node_ssh, download_cmd, timeout=700)
                     
-                    # Verify download
-                    if [ ! -f apache-dolphinscheduler-3.2.0-bin.tar.gz ] || [ ! -s apache-dolphinscheduler-3.2.0-bin.tar.gz ]; then
-                        echo "✗ Download verification failed - file is missing or empty"
-                        exit 1
-                    fi
-                    
-                    echo "✓ Download verified, file size: $(du -h apache-dolphinscheduler-3.2.0-bin.tar.gz | cut -f1)"
-                    
-                    # Extract package
+                    # Step 2c: Extract package
+                    logger.info(f"[{host}] Extracting package...")
+                    extract_cmd = """
+                    cd /tmp/ds_download_*
                     echo "Extracting package..."
                     if tar -xzf apache-dolphinscheduler-3.2.0-bin.tar.gz; then
                         echo "✓ Package extracted successfully"
                     else
-                        echo "✗ Package extraction failed"
+                        echo "✗ Extraction failed"
                         exit 1
                     fi
+                    """
+                    execute_remote_command(node_ssh, extract_cmd, timeout=120)
                     
-                    # Copy to install path
+                    # Step 2d: Install to final location
+                    logger.info(f"[{host}] Installing to final location...")
+                    install_cmd = f"""
+                    cd /tmp/ds_download_*
                     echo "Installing to {config['deployment']['install_path']}..."
                     sudo mkdir -p {config['deployment']['install_path']}
                     sudo cp -r apache-dolphinscheduler-3.2.0-bin/* {config['deployment']['install_path']}/
                     sudo chown -R {deploy_user}:{deploy_user} {config['deployment']['install_path']}
                     
-                    # Clean up temp files
+                    # Clean up
                     cd /
-                    rm -rf $TEMP_DIR
-                    
-                    echo "✓ DolphinScheduler installed successfully on {host}"
+                    rm -rf /tmp/ds_download_*
+                    echo "✓ Installation completed and temp files cleaned"
                     """
+                    execute_remote_command(node_ssh, install_cmd, timeout=180)
                 
-                execute_remote_command(node_ssh, copy_cmd, timeout=600)  # Increased timeout for download
-                
-                # Set permissions
+                # Step 3: Set permissions
+                logger.info(f"[{host}] Setting permissions...")
                 execute_remote_command(node_ssh, f"sudo chown -R {deploy_user}:{deploy_user} {config['deployment']['install_path']}")
                 execute_remote_command(node_ssh, f"sudo chmod +x {config['deployment']['install_path']}/bin/*.sh")
                 
-                # Install MySQL JDBC driver on each node
-                logger.debug(f"Installing MySQL JDBC driver on {host}...")
+                # Step 4: Install MySQL JDBC driver
+                logger.info(f"[{host}] Installing MySQL JDBC driver...")
                 install_mysql_jdbc_driver(node_ssh, config['deployment']['install_path'], deploy_user)
                 
-                # Upload configuration files to each node
-                logger.debug(f"Uploading configuration files to {host}...")
+                # Step 5: Upload configuration files
+                logger.info(f"[{host}] Uploading configuration files...")
                 upload_configuration_files(node_ssh, config, config['deployment']['install_path'])
                 configure_components(node_ssh, config, config['deployment']['install_path'])
                 
+                logger.info(f"[{host}] ✓ Deployment completed successfully")
                 return f"✓ Deployed {component} to {host}"
                 
             except Exception as e:
+                logger.error(f"[{host}] Deployment failed: {e}")
                 raise Exception(f"Failed to deploy {component} to {host}: {e}")
             finally:
-                node_ssh.close()
+                if node_ssh:
+                    node_ssh.close()
         
         # Deploy to all nodes sequentially (more reliable)
         logger.info(f"Deploying to {len(all_nodes)} nodes sequentially...")
