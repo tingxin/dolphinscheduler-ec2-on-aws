@@ -122,11 +122,53 @@ def initialize_node(host, username='ec2-user', key_file=None):
             # Skip system update for faster deployment
             # sudo dnf update -y
             
-            # Install Java first (Amazon Linux 2023 uses different package names)
-            echo "Installing Java..."
-            sudo dnf install -y java-1.8.0-amazon-corretto java-1.8.0-amazon-corretto-devel || \
-            sudo dnf install -y java-11-amazon-corretto java-11-amazon-corretto-devel || \
-            sudo dnf install -y java-17-amazon-corretto java-17-amazon-corretto-devel
+            # Install Java with proper error handling
+            echo "Installing Java on Amazon Linux 2023..."
+            
+            # Try different Java versions in order of preference
+            JAVA_INSTALLED=false
+            
+            # Try Java 8 first (most compatible with DolphinScheduler)
+            if sudo dnf install -y java-1.8.0-amazon-corretto java-1.8.0-amazon-corretto-devel 2>/dev/null; then
+                echo "✓ Java 8 (Amazon Corretto) installed successfully"
+                JAVA_INSTALLED=true
+            elif sudo dnf install -y java-8-amazon-corretto java-8-amazon-corretto-devel 2>/dev/null; then
+                echo "✓ Java 8 (Amazon Corretto alternative) installed successfully"
+                JAVA_INSTALLED=true
+            # Try Java 11 as fallback
+            elif sudo dnf install -y java-11-amazon-corretto java-11-amazon-corretto-devel 2>/dev/null; then
+                echo "✓ Java 11 (Amazon Corretto) installed successfully"
+                JAVA_INSTALLED=true
+            # Try Java 17 as last resort
+            elif sudo dnf install -y java-17-amazon-corretto java-17-amazon-corretto-devel 2>/dev/null; then
+                echo "✓ Java 17 (Amazon Corretto) installed successfully"
+                JAVA_INSTALLED=true
+            # Try OpenJDK as final fallback
+            elif sudo dnf install -y java-1.8.0-openjdk java-1.8.0-openjdk-devel 2>/dev/null; then
+                echo "✓ OpenJDK 8 installed successfully"
+                JAVA_INSTALLED=true
+            else
+                echo "✗ Failed to install Java with dnf, trying alternatives..."
+                # Try with yum as fallback (some AMIs might have yum)
+                if command -v yum >/dev/null 2>&1; then
+                    if sudo yum install -y java-1.8.0-amazon-corretto java-1.8.0-amazon-corretto-devel; then
+                        echo "✓ Java 8 installed with yum"
+                        JAVA_INSTALLED=true
+                    fi
+                fi
+            fi
+            
+            # Verify Java installation
+            if [ "$JAVA_INSTALLED" = "true" ]; then
+                echo "Verifying Java installation..."
+                java -version 2>&1 | head -3
+                which java
+                echo "JAVA_HOME candidates:"
+                ls -la /usr/lib/jvm/ 2>/dev/null || echo "No /usr/lib/jvm directory"
+            else
+                echo "✗ CRITICAL: Java installation failed completely"
+                exit 1
+            fi
             
             # Install other packages
             echo "Installing other dependencies..."
@@ -135,13 +177,6 @@ def initialize_node(host, username='ec2-user', key_file=None):
                 psmisc tar gzip wget curl nc \
                 python3 python3-pip \
                 sudo procps-ng
-            
-            # Verify Java installation
-            echo "Verifying Java installation..."
-            java -version 2>&1 | head -3
-            which java
-            echo "JAVA_HOME candidates:"
-            ls -la /usr/lib/jvm/ 2>/dev/null || echo "No /usr/lib/jvm directory"
             
             # Verify MySQL client
             mysql --version 2>&1 | head -1
@@ -974,16 +1009,31 @@ export SPRING_DATASOURCE_URL="jdbc:mysql://{db_config['host']}:{db_config.get('p
 export SPRING_DATASOURCE_USERNAME="{db_config['username']}" && \
 export SPRING_DATASOURCE_PASSWORD="{password}" && \
 export JAVA_HOME={java_home} && \
+export PATH=$JAVA_HOME/bin:$PATH && \
 export DOLPHINSCHEDULER_HOME={install_path} && \
 export JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/logs/dump.hprof' && \
-sudo -u {deploy_user} bash bin/upgrade-schema.sh 2>&1"""
+sudo -E -u {deploy_user} bash bin/upgrade-schema.sh 2>&1"""
                 logger.info(f"Executing database initialization...")
                 logger.debug(f"Command: {upgrade_cmd}")
                 
-                # First check if the script exists
-                check_script_cmd = f"ls -la {install_path}/tools/bin/upgrade-schema.sh"
+                # First check if the script exists and is executable
+                check_script_cmd = f"ls -la {install_path}/tools/bin/upgrade-schema.sh 2>/dev/null || echo 'Script not found'"
                 script_check = execute_remote_command(ssh, check_script_cmd)
                 logger.info(f"Script check result: {script_check}")
+                
+                # Make sure the script is executable
+                chmod_cmd = f"sudo chmod +x {install_path}/tools/bin/*.sh"
+                execute_remote_command(ssh, chmod_cmd)
+                
+                # Also check if required commands are available in the script environment
+                env_check_cmd = f"""cd {install_path}/tools && \
+export JAVA_HOME={java_home} && \
+export PATH=$JAVA_HOME/bin:$PATH && \
+echo "Java check:" && java -version 2>&1 | head -1 && \
+echo "MySQL check:" && mysql --version 2>&1 | head -1 && \
+echo "Script exists:" && ls -la bin/upgrade-schema.sh"""
+                env_check = execute_remote_command(ssh, env_check_cmd)
+                logger.info(f"Environment check: {env_check}")
                 
                 output = execute_remote_command(ssh, upgrade_cmd, timeout=600)
                 logger.info(f"Database initialization output: {output}")
@@ -1006,15 +1056,20 @@ export SPRING_DATASOURCE_URL="jdbc:mysql://{db_config['host']}:{db_config.get('p
 export SPRING_DATASOURCE_USERNAME="{db_config['username']}" && \
 export SPRING_DATASOURCE_PASSWORD="{password}" && \
 export JAVA_HOME={java_home} && \
+export PATH=$JAVA_HOME/bin:$PATH && \
 export DOLPHINSCHEDULER_HOME={install_path} && \
 export JAVA_OPTS='-server -Duser.timezone=UTC -Xms1g -Xmx1g -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={install_path}/logs/dump.hprof' && \
-sudo -u {deploy_user} bash bin/upgrade-schema.sh 2>&1"""
+sudo -E -u {deploy_user} bash bin/upgrade-schema.sh 2>&1"""
                 logger.info(f"Attempting database initialization (retry)...")
                 logger.debug(f"Retry command: {upgrade_cmd}")
                 
-                # Check script again
+                # Check script again and ensure it's executable
                 script_check = execute_remote_command(ssh, check_script_cmd)
                 logger.info(f"Retry script check: {script_check}")
+                
+                # Make sure the script is executable
+                chmod_cmd = f"sudo chmod +x {install_path}/tools/bin/*.sh"
+                execute_remote_command(ssh, chmod_cmd)
                 
                 output = execute_remote_command(ssh, upgrade_cmd, timeout=600)
                 logger.info(f"Database initialization retry output: {output}")
