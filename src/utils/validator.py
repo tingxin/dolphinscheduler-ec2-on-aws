@@ -196,15 +196,31 @@ def validate_database_connection(db_config):
         # 确保密码是字符串类型，解决 PyMySQL 兼容性问题
         password = str(db_config['password']) if db_config['password'] is not None else ''
         
+        # First try to connect to MySQL server (without specifying database)
         conn = pymysql.connect(
             host=db_config['host'],
             port=db_config.get('port', 3306),
             user=db_config['username'],
             password=password,
-            database=db_config['database'],
             connect_timeout=10,
             charset='utf8mb4'  # 添加字符集支持
         )
+        
+        # Check if target database exists, if not try to create it
+        cursor = conn.cursor()
+        database_name = db_config['database']
+        
+        try:
+            cursor.execute(f"USE `{database_name}`")
+            logger.info(f"✓ Database '{database_name}' exists and accessible")
+        except Exception:
+            # Database doesn't exist or no access, try to create it
+            try:
+                cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{database_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+                logger.info(f"✓ Database '{database_name}' created")
+            except Exception as create_error:
+                logger.warning(f"Could not create database '{database_name}': {create_error}")
+                logger.info(f"Assuming database '{database_name}' will be created by admin")
         conn.close()
         logger.info(f"✓ Database connection validated: {db_config['host']}")
         return True
