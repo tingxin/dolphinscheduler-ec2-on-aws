@@ -370,8 +370,15 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                     # Create temp directory
                     mkdir -p {temp_path}
                     
-                    # Copy from first master using ec2-user
-                    scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 -r ec2-user@{first_master}:{config["deployment"]["install_path"]}/* {temp_path}/
+                    # Copy from first master using ec2-user (from temp directory first, then from install path)
+                    if scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 -r ec2-user@{first_master}:{extract_dir}/* {temp_path}/ 2>/dev/null; then
+                        echo "Copied from temp directory"
+                    elif scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 -r ec2-user@{first_master}:{config["deployment"]["install_path"]}/* {temp_path}/ 2>/dev/null; then
+                        echo "Copied from install directory"
+                    else
+                        echo "Failed to copy from both locations"
+                        exit 1
+                    fi
                     
                     # Move to final location and change ownership
                     sudo cp -r {temp_path}/* {config["deployment"]["install_path"]}/
