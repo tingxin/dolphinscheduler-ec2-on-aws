@@ -38,22 +38,20 @@ registry:
 # ===== 资源存储配置 (HDFS) - 必填 =====
 storage:
   type: HDFS
-  # HDFS 配置
+  # HDFS 配置 - 用于资源存储
   hdfs:
     namenode_host: 172.31.6.163  # 必填：HDFS NameNode 主机地址（EMR 主节点）
     namenode_port: 8020  # 必填：HDFS NameNode 端口（默认 8020）
     upload_path: /dolphinscheduler  # 必填：HDFS 上的资源存储路径
     user: hadoop  # 必填：HDFS 用户名（通常是 hadoop）
   
-  # S3 配置（备用，如果需要回退到 S3）
-  # type: S3
-  # bucket: tx-mageline-eks  # 必填：S3 bucket 名称
-  # region: us-east-2  # 必填：S3 区域
-  # upload_path: /dolphinscheduler
-  # use_iam_role: true  # 推荐使用 IAM Role
-  # access_key_id: ""
-  # secret_access_key: ""
-  # endpoint: https://s3.us-east-2.amazonaws.com
+  # S3 配置 - 用于部署包分发（仍然需要）
+  bucket: tx-mageline-eks  # 必填：S3 bucket 名称（用于下载部署包）
+  region: us-east-2  # 必填：S3 区域
+  use_iam_role: true  # 推荐使用 IAM Role
+  access_key_id: ""
+  secret_access_key: ""
+  endpoint: https://s3.us-east-2.amazonaws.com
 
 # ===== AWS 基础配置 - 必填 =====
 aws:

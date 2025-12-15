@@ -52,8 +52,6 @@ def validate_config(config):
         'database.password',
         'database.database',
         'registry.servers',
-        'storage.bucket',
-        'storage.region',
         'aws.region',
         'aws.vpc_id',
         'aws.subnets',
@@ -69,6 +67,36 @@ def validate_config(config):
         value = get_nested_value(config, field)
         if value is None or (isinstance(value, (str, list)) and not value):
             errors.append(f"Missing required field: {field}")
+    
+    # Validate storage configuration based on type
+    storage_type = config.get('storage', {}).get('type', 'LOCAL').upper()
+    
+    # S3 bucket and region are required for package distribution (regardless of storage type)
+    # because we use S3 to download the deployment package
+    s3_bucket = get_nested_value(config, 'storage.bucket')
+    s3_region = get_nested_value(config, 'storage.region')
+    
+    if not s3_bucket:
+        errors.append("Missing required field: storage.bucket (needed for package distribution)")
+    if not s3_region:
+        errors.append("Missing required field: storage.region (needed for package distribution)")
+    
+    # Validate storage-specific fields
+    if storage_type == 'HDFS':
+        hdfs_namenode = get_nested_value(config, 'storage.hdfs.namenode_host')
+        hdfs_port = get_nested_value(config, 'storage.hdfs.namenode_port')
+        if not hdfs_namenode:
+            errors.append("Missing required field: storage.hdfs.namenode_host")
+        if not hdfs_port:
+            errors.append("Missing required field: storage.hdfs.namenode_port")
+    elif storage_type == 'S3':
+        # S3 storage requires additional S3-specific fields
+        s3_access_key = get_nested_value(config, 'storage.access_key_id')
+        s3_secret_key = get_nested_value(config, 'storage.secret_access_key')
+        s3_use_iam = get_nested_value(config, 'storage.use_iam_role')
+        
+        if not s3_use_iam and (not s3_access_key or not s3_secret_key):
+            errors.append("S3 storage requires either use_iam_role=true or access_key_id/secret_access_key")
     
     # Validate node counts
     master_count = config.get('cluster', {}).get('master', {}).get('count', 0)
