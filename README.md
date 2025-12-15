@@ -105,7 +105,7 @@ ssh-keygen -l -f ~/your-key.pem
 cd /home/ec2-user/work
 git clone https://github.com/tingxin/dolphinscheduler-ec2-on-aws.git
 cd dolphinscheduler-ec2-on-aws
-git checkout 3.2.0dev
+git checkout main
 
 # 安装Python依赖
 conda activate py312
