@@ -86,6 +86,31 @@ def generate_application_yaml_v320(config, component='master'):
 
 """
     
+    # Add resource storage configuration for all components
+    storage_config = config.get('storage', {})
+    if storage_config.get('type') == 'S3':
+        yaml_content += f"""# Resource Storage Configuration
+resource-storage:
+  type: S3
+  s3:
+    region: {storage_config.get('region', 'us-east-2')}
+    bucket-name: {storage_config.get('bucket', 'dolphinscheduler')}
+    folder: {storage_config.get('upload_path', '/dolphinscheduler')}
+    access-key-id: {storage_config.get('access_key_id', '')}
+    secret-access-key: {storage_config.get('secret_access_key', '')}
+    endpoint: {storage_config.get('endpoint', f"https://s3.{storage_config.get('region', 'us-east-2')}.amazonaws.com")}
+
+"""
+    else:
+        # Default to local storage if S3 not configured
+        yaml_content += f"""# Resource Storage Configuration
+resource-storage:
+  type: LOCAL
+  local:
+    base-dir: /opt/dolphinscheduler/resources
+
+"""
+    
     # Add component-specific configuration for 3.2.0
     if component == 'master':
         max_cpu_load = service_config.get('max_cpu_load_avg', 3)
