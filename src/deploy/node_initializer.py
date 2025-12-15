@@ -14,7 +14,7 @@ logger = setup_logger(__name__)
 
 def initialize_node(host, username='ec2-user', key_file=None, config=None):
     """
-    Initialize EC2 node with required dependencies
+    Initialize EC2 node with required dependencies and resource directories
     
     Args:
         host: Host address
@@ -134,6 +134,30 @@ def initialize_node(host, username='ec2-user', key_file=None, config=None):
         execute_script(ssh, install_script, sudo=False)
         
         logger.debug(f"✓ System dependencies installed on {host}")
+        
+        # Create resource directories for DolphinScheduler
+        deploy_user = config.get('deployment', {}).get('user', 'dolphinscheduler') if config else 'dolphinscheduler'
+        
+        logger.debug(f"Creating resource directories on {host}...")
+        create_dirs_script = f"""
+        # Create resource directory for local storage
+        sudo mkdir -p /tmp/dolphinscheduler
+        sudo chown {deploy_user}:{deploy_user} /tmp/dolphinscheduler
+        sudo chmod 755 /tmp/dolphinscheduler
+        
+        # Create subdirectories
+        sudo mkdir -p /tmp/dolphinscheduler/resources
+        sudo mkdir -p /tmp/dolphinscheduler/exec
+        sudo mkdir -p /tmp/dolphinscheduler/process_exec_dir
+        
+        # Set permissions
+        sudo chown -R {deploy_user}:{deploy_user} /tmp/dolphinscheduler
+        sudo chmod -R 755 /tmp/dolphinscheduler
+        """
+        
+        execute_script(ssh, create_dirs_script, sudo=False)
+        logger.debug(f"✓ Resource directories created on {host}")
+        
         return True
         
     finally:

@@ -8,13 +8,17 @@ from src.deploy.ssh import connect_ssh, execute_remote_command, upload_file, exe
 from src.deploy.config_generator import (
     generate_application_yaml_v320, 
     generate_install_env_v320, 
-    generate_dolphinscheduler_env_v320
+    generate_dolphinscheduler_env_v320,
+    generate_common_properties_v320
 )
 from src.deploy.package_manager import (
     download_and_extract_remote,
     upload_and_extract_package,
     install_mysql_jdbc_driver,
-    setup_package_permissions
+    setup_package_permissions,
+    check_s3_plugin_installed,
+    install_s3_plugin,
+    configure_s3_storage
 )
 from src.utils.logger import setup_logger
 
@@ -272,6 +276,93 @@ def upload_configuration_files(ssh, config, extract_dir):
     return True
 
 
+def upload_common_properties(ssh, config, extract_dir):
+    """
+    Generate and upload common.properties configuration file
+    
+    This file is critical for resource center functionality.
+    
+    Args:
+        ssh: SSH connection
+        config: Configuration dictionary
+        extract_dir: DolphinScheduler extracted directory
+    
+    Returns:
+        True if successful
+    """
+    logger.info("Generating common.properties configuration...")
+    deploy_user = config['deployment']['user']
+    
+    properties_content = generate_common_properties_v320(config)
+    
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.properties', delete=False) as f:
+        f.write(properties_content)
+        temp_properties = f.name
+    
+    try:
+        temp_remote_properties = "/tmp/common.properties"
+        upload_file(ssh, temp_properties, temp_remote_properties)
+        
+        # Move to correct location
+        properties_path = f"{extract_dir}/conf/common.properties"
+        execute_remote_command(ssh, f"sudo mv {temp_remote_properties} {properties_path}")
+        execute_remote_command(ssh, f"sudo chown {deploy_user}:{deploy_user} {properties_path}")
+        execute_remote_command(ssh, f"sudo chmod 644 {properties_path}")
+        
+        os.remove(temp_properties)
+        logger.info("✓ common.properties configured")
+    except Exception as e:
+        logger.error(f"Failed to upload common.properties: {e}")
+        raise
+    
+    return True
+
+
+def create_resource_directories(ssh, config):
+    """
+    Create resource directories on the node
+    
+    DolphinScheduler needs /tmp/dolphinscheduler directory for local resource storage.
+    
+    Args:
+        ssh: SSH connection
+        config: Configuration dictionary
+    
+    Returns:
+        True if successful
+    """
+    logger.info("Creating resource directories...")
+    deploy_user = config['deployment']['user']
+    
+    create_dirs_script = f"""
+    # Create resource directory for local storage
+    sudo mkdir -p /tmp/dolphinscheduler
+    sudo chown {deploy_user}:{deploy_user} /tmp/dolphinscheduler
+    sudo chmod 755 /tmp/dolphinscheduler
+    
+    # Create subdirectories
+    sudo mkdir -p /tmp/dolphinscheduler/resources
+    sudo mkdir -p /tmp/dolphinscheduler/exec
+    sudo mkdir -p /tmp/dolphinscheduler/process_exec_dir
+    
+    # Set permissions
+    sudo chown -R {deploy_user}:{deploy_user} /tmp/dolphinscheduler
+    sudo chmod -R 755 /tmp/dolphinscheduler
+    
+    # Verify
+    ls -la /tmp/dolphinscheduler
+    """
+    
+    try:
+        execute_script(ssh, create_dirs_script, sudo=False)
+        logger.info("✓ Resource directories created")
+    except Exception as e:
+        logger.error(f"Failed to create resource directories: {e}")
+        raise
+    
+    return True
+
+
 def prepare_package_on_bastion(ssh, config):
     """
     Download DolphinScheduler package on bastion host for distribution to nodes
@@ -450,16 +541,33 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
         # Step 2: Set ownership and permissions
         setup_package_permissions(ssh, extract_dir, deploy_user)
         
-        # Step 3: Upload configuration files
+        # Step 3: Create resource directories
+        create_resource_directories(ssh, config)
+        
+        # Step 4: Upload configuration files
         upload_configuration_files(ssh, config, extract_dir)
         
-        # Step 4: Install MySQL JDBC driver
+        # Step 5: Upload common.properties (critical for resource center)
+        upload_common_properties(ssh, config, extract_dir)
+        
+        # Step 5.5: Check and install S3 plugin if S3 storage is configured
+        storage_type = config.get('storage', {}).get('type', 'LOCAL')
+        if storage_type == 'S3':
+            logger.info("S3 storage is configured, checking and installing S3 plugin...")
+            if not check_s3_plugin_installed(ssh, extract_dir):
+                logger.info("S3 plugin not found, installing...")
+                install_s3_plugin(ssh, extract_dir, deploy_user, config)
+                configure_s3_storage(ssh, extract_dir, deploy_user, config)
+            else:
+                logger.info("S3 plugin already installed")
+        
+        # Step 6: Install MySQL JDBC driver
         install_mysql_jdbc_driver(ssh, extract_dir, deploy_user)
         
-        # Step 5: Initialize database schema
+        # Step 7: Initialize database schema
         initialize_database(ssh, config, extract_dir)
         
-        # Step 6: Generate application.yaml files for all components
+        # Step 8: Generate application.yaml files for all components
         configure_components(ssh, config, extract_dir)
         
         # Step 7: Deploy to all nodes manually
@@ -669,13 +777,35 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                 execute_remote_command(node_ssh, f"sudo chown -R {deploy_user}:{deploy_user} {config['deployment']['install_path']}")
                 execute_remote_command(node_ssh, f"sudo chmod +x {config['deployment']['install_path']}/bin/*.sh")
                 
-                # Step 4: Install MySQL JDBC driver
-                logger.info(f"[{host}] Installing MySQL JDBC driver...")
-                install_mysql_jdbc_driver(node_ssh, config['deployment']['install_path'], deploy_user)
+                # Step 4: Create resource directories
+                logger.info(f"[{host}] Creating resource directories...")
+                create_resource_directories(node_ssh, config)
                 
                 # Step 5: Upload configuration files
                 logger.info(f"[{host}] Uploading configuration files...")
                 upload_configuration_files(node_ssh, config, config['deployment']['install_path'])
+                
+                # Step 6: Upload common.properties (critical for resource center)
+                logger.info(f"[{host}] Uploading common.properties...")
+                upload_common_properties(node_ssh, config, config['deployment']['install_path'])
+                
+                # Step 6.5: Check and install S3 plugin if S3 storage is configured
+                storage_type = config.get('storage', {}).get('type', 'LOCAL')
+                if storage_type == 'S3':
+                    logger.info(f"[{host}] S3 storage is configured, checking and installing S3 plugin...")
+                    if not check_s3_plugin_installed(node_ssh, config['deployment']['install_path']):
+                        logger.info(f"[{host}] S3 plugin not found, installing...")
+                        install_s3_plugin(node_ssh, config['deployment']['install_path'], deploy_user, config)
+                        configure_s3_storage(node_ssh, config['deployment']['install_path'], deploy_user, config)
+                    else:
+                        logger.info(f"[{host}] S3 plugin already installed")
+                
+                # Step 7: Install MySQL JDBC driver
+                logger.info(f"[{host}] Installing MySQL JDBC driver...")
+                install_mysql_jdbc_driver(node_ssh, config['deployment']['install_path'], deploy_user)
+                
+                # Step 8: Configure components
+                logger.info(f"[{host}] Configuring components...")
                 configure_components(node_ssh, config, config['deployment']['install_path'])
                 
                 logger.info(f"[{host}] ✓ Deployment completed successfully")

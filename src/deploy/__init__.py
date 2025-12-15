@@ -18,7 +18,10 @@ from .package_manager import (
     download_and_extract_remote,
     upload_and_extract_package,
     install_mysql_jdbc_driver,
-    setup_package_permissions
+    setup_package_permissions,
+    check_s3_plugin_installed,
+    install_s3_plugin,
+    configure_s3_storage
 )
 
 # Node initialization
@@ -50,6 +53,9 @@ __all__ = [
     'upload_and_extract_package',
     'install_mysql_jdbc_driver',
     'setup_package_permissions',
+    'check_s3_plugin_installed',
+    'install_s3_plugin',
+    'configure_s3_storage',
     'initialize_node',
     'create_deployment_user',
     'setup_ssh_keys',

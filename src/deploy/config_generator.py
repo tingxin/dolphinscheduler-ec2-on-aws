@@ -368,3 +368,155 @@ export PATH=$HADOOP_HOME/bin:$SPARK_HOME/bin:$PYTHON_LAUNCHER:$JAVA_HOME/bin:$HI
 """
     
     return env_content
+
+
+def generate_common_properties_v320(config):
+    """
+    Generate common.properties for DolphinScheduler 3.2.0
+    
+    This file configures resource storage, data source, and other common settings.
+    Critical for resource center functionality.
+    
+    Args:
+        config: Configuration dictionary
+    
+    Returns:
+        Configuration content string
+    """
+    storage_config = config.get('storage', {})
+    
+    # Determine resource storage type and configuration
+    storage_type = storage_config.get('type', 'LOCAL').upper()
+    
+    if storage_type == 'S3':
+        # S3 storage configuration
+        resource_storage_config = f"""# Resource Storage Configuration - S3
+resource.storage.type=S3
+resource.aws.region={storage_config.get('region', 'us-east-2')}
+resource.aws.s3.bucket.name={storage_config.get('bucket', 'dolphinscheduler')}
+resource.aws.s3.upload.folder={storage_config.get('upload_path', '/dolphinscheduler')}
+resource.aws.access.key.id={storage_config.get('access_key_id', '')}
+resource.aws.secret.access.key={storage_config.get('secret_access_key', '')}
+resource.aws.s3.endpoint={storage_config.get('endpoint', f"https://s3.{storage_config.get('region', 'us-east-2')}.amazonaws.com")}
+"""
+    else:
+        # Default to LOCAL storage
+        resource_storage_config = """# Resource Storage Configuration - LOCAL
+resource.storage.type=LOCAL
+resource.local.basedir=/tmp/dolphinscheduler
+"""
+    
+    # Build common.properties content
+    properties_content = f"""#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+# ============================================================================
+# DolphinScheduler Common Configuration
+# ============================================================================
+
+{resource_storage_config}
+
+# Data source configuration
+datasource.driver.class.name=com.mysql.cj.jdbc.Driver
+datasource.url=jdbc:mysql://{config['database']['host']}:{config['database'].get('port', 3306)}/{config['database']['database']}?useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true
+datasource.username={config['database']['username']}
+datasource.password={config['database']['password']}
+
+# Connection pool configuration
+datasource.hikari.connection-test-query=select 1
+datasource.hikari.pool-name=DolphinScheduler
+datasource.hikari.minimum-idle=5
+datasource.hikari.maximum-pool-size=50
+datasource.hikari.auto-commit=true
+datasource.hikari.idle-timeout=600000
+datasource.hikari.pool-prepared-statements=true
+datasource.hikari.max-prepared-statements-per-connection=20
+datasource.hikari.connection-timeout=30000
+datasource.hikari.validation-timeout=3000
+
+# Cache configuration
+spring.cache.type=none
+
+# Jackson configuration
+spring.jackson.time-zone=UTC
+spring.jackson.date-format=yyyy-MM-dd HH:mm:ss
+
+# Registry center configuration
+registry.type=zookeeper
+registry.zookeeper.namespace={config['registry'].get('namespace', 'dolphinscheduler')}
+registry.zookeeper.connect-string={','.join(config['registry']['servers'])}
+registry.zookeeper.retry-policy.base-sleep-time={config['registry'].get('retry', {}).get('base_sleep_time', 1000)}
+registry.zookeeper.retry-policy.max-sleep={config['registry'].get('retry', {}).get('max_sleep_time', 3000)}
+registry.zookeeper.retry-policy.max-retries={config['registry'].get('retry', {}).get('max_retries', 5)}
+registry.zookeeper.session-timeout={config['registry'].get('session_timeout', 60000)}
+registry.zookeeper.connection-timeout={config['registry'].get('connection_timeout', 30000)}
+
+# Server configuration
+server.port=12345
+server.servlet.context-path=/dolphinscheduler
+
+# Logging configuration
+logging.level.root=INFO
+logging.level.org.apache.dolphinscheduler=INFO
+
+# Task execution configuration
+task.execute.threads=100
+task.dispatch.task.number=3
+task.commit.retry.times=5
+task.commit.interval=1000
+
+# Master configuration
+master.listen.port=5678
+master.exec.threads=100
+master.dispatch.task.number=3
+master.host.selector=LowerWeight
+master.heartbeat.interval=10
+master.task.commit.retry.times=5
+master.task.commit.interval=1000
+master.max.cpu.load.avg=-1
+master.reserved.memory=0.3
+
+# Worker configuration
+worker.listen.port=1234
+worker.exec.threads=100
+worker.heartbeat.interval=10
+worker.max.cpu.load.avg=-1
+worker.reserved.memory=0.3
+worker.exec.path=/tmp/dolphinscheduler/exec
+
+# Alert configuration
+alert.port=50052
+alert.wait.timeout=5000
+
+# Python gateway configuration
+python-gateway.enabled=true
+python-gateway.gateway-server.address=0.0.0.0
+python-gateway.gateway-server.port=25333
+python-gateway.python-path=/usr/bin/python
+
+# File upload configuration
+file.upload.max-size=1073741824
+
+# Tenant configuration
+tenant.auto.create=true
+
+# Other configurations
+server.compression.enabled=true
+server.compression.mime-types=text/html,text/xml,text/plain,text/css,text/javascript,application/javascript,application/json,application/xml
+"""
+    
+    return properties_content

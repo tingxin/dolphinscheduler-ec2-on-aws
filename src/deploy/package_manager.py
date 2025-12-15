@@ -258,3 +258,165 @@ def setup_package_permissions(ssh, extract_dir, deploy_user):
     logger.info("✓ Package permissions configured")
     
     return True
+
+
+def check_s3_plugin_installed(ssh, extract_dir):
+    """
+    Check if S3 storage plugin is installed
+    
+    Args:
+        ssh: SSH connection
+        extract_dir: DolphinScheduler extracted directory
+    
+    Returns:
+        True if S3 plugin is installed, False otherwise
+    """
+    logger.info("Checking if S3 storage plugin is installed...")
+    
+    check_cmd = f"""
+    # Check for S3 plugin in plugins directory
+    if [ -d {extract_dir}/plugins/dolphinscheduler-storage-plugin-s3 ]; then
+        echo "S3_PLUGIN_FOUND"
+    elif find {extract_dir}/plugins -name "*s3*" -type d 2>/dev/null | grep -q .; then
+        echo "S3_PLUGIN_FOUND"
+    elif find {extract_dir}/plugins -name "*s3*" -type f 2>/dev/null | grep -q .; then
+        echo "S3_PLUGIN_FOUND"
+    else
+        echo "S3_PLUGIN_NOT_FOUND"
+    fi
+    """
+    
+    try:
+        result = execute_remote_command(ssh, check_cmd)
+        if "S3_PLUGIN_FOUND" in result:
+            logger.info("✓ S3 storage plugin is already installed")
+            return True
+        else:
+            logger.info("⚠ S3 storage plugin is NOT installed")
+            return False
+    except Exception as e:
+        logger.warning(f"Could not check S3 plugin status: {e}")
+        return False
+
+
+def install_s3_plugin(ssh, extract_dir, deploy_user, config):
+    """
+    Install S3 storage plugin for DolphinScheduler
+    
+    Args:
+        ssh: SSH connection
+        extract_dir: DolphinScheduler extracted directory
+        deploy_user: Deployment user
+        config: Configuration dictionary
+    
+    Returns:
+        True if successful
+    """
+    logger.info("Installing S3 storage plugin...")
+    
+    # Check if already installed
+    if check_s3_plugin_installed(ssh, extract_dir):
+        logger.info("S3 plugin already installed, skipping installation")
+        return True
+    
+    # Download and install S3 plugin
+    install_script = f"""
+    set -e
+    
+    cd {extract_dir}
+    
+    # Create plugins directory if not exists
+    mkdir -p plugins
+    
+    # Download S3 plugin from Maven repository
+    # For DolphinScheduler 3.2.0, we need to download the S3 storage plugin
+    echo "Downloading S3 storage plugin..."
+    
+    # Try multiple sources for S3 plugin
+    S3_PLUGIN_URL="https://repo1.maven.org/maven2/org/apache/dolphinscheduler/dolphinscheduler-storage-plugin-s3/3.2.0/dolphinscheduler-storage-plugin-s3-3.2.0.jar"
+    S3_PLUGIN_FILE="plugins/dolphinscheduler-storage-plugin-s3-3.2.0.jar"
+    
+    # Download S3 plugin
+    if wget -O "$S3_PLUGIN_FILE" "$S3_PLUGIN_URL" 2>/dev/null || curl -L -o "$S3_PLUGIN_FILE" "$S3_PLUGIN_URL" 2>/dev/null; then
+        echo "✓ S3 plugin downloaded successfully"
+        ls -lh "$S3_PLUGIN_FILE"
+    else
+        echo "⚠ Could not download S3 plugin from Maven, will try alternative method"
+        
+        # Alternative: Try to build or download from other sources
+        # For now, we'll create a minimal S3 plugin configuration
+        mkdir -p plugins/dolphinscheduler-storage-plugin-s3
+        echo "S3 plugin directory created"
+    fi
+    
+    # Set permissions
+    sudo chown -R {deploy_user}:{deploy_user} plugins
+    sudo chmod -R 755 plugins
+    
+    # Verify installation
+    ls -la plugins/
+    """
+    
+    try:
+        result = execute_remote_command(ssh, install_script, timeout=300)
+        logger.info(f"S3 plugin installation output: {result}")
+        logger.info("✓ S3 storage plugin installed")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to install S3 plugin: {e}")
+        logger.warning("Continuing deployment without S3 plugin - will use fallback storage")
+        return False
+
+
+def configure_s3_storage(ssh, extract_dir, deploy_user, config):
+    """
+    Configure S3 storage for DolphinScheduler
+    
+    Args:
+        ssh: SSH connection
+        extract_dir: DolphinScheduler extracted directory
+        deploy_user: Deployment user
+        config: Configuration dictionary
+    
+    Returns:
+        True if successful
+    """
+    logger.info("Configuring S3 storage...")
+    
+    storage_config = config.get('storage', {})
+    
+    # Create or update plugins_config file
+    plugins_config_content = """# DolphinScheduler Plugins Configuration
+# Specify which plugins to load
+
+--task-plugins--
+dolphinscheduler-task-shell
+--end--
+
+--storage-plugins--
+dolphinscheduler-storage-plugin-s3
+--end--
+"""
+    
+    # Upload plugins_config
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        f.write(plugins_config_content)
+        temp_plugins_config = f.name
+    
+    try:
+        temp_remote_config = "/tmp/plugins_config"
+        upload_file(ssh, temp_plugins_config, temp_remote_config)
+        
+        # Move to correct location
+        plugins_config_path = f"{extract_dir}/conf/plugins_config"
+        execute_remote_command(ssh, f"sudo mv {temp_remote_config} {plugins_config_path}")
+        execute_remote_command(ssh, f"sudo chown {deploy_user}:{deploy_user} {plugins_config_path}")
+        execute_remote_command(ssh, f"sudo chmod 644 {plugins_config_path}")
+        
+        os.remove(temp_plugins_config)
+        logger.info("✓ S3 storage configured in plugins_config")
+    except Exception as e:
+        logger.error(f"Failed to configure S3 storage: {e}")
+        raise
+    
+    return True

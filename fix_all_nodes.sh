@@ -35,12 +35,35 @@ check_files() {
         exit 1
     fi
     
-    if [ ! -f "ec2-ohio.pem" ]; then
-        log_error "SSH密钥文件 ec2-ohio.pem 不存在"
+    # 查找SSH密钥文件
+    SSH_KEY=""
+    for key_file in ec2-ohio.pem ~/.ssh/id_rsa ~/.ssh/id_ed25519; do
+        if [ -f "$key_file" ]; then
+            SSH_KEY="$key_file"
+            log_info "找到SSH密钥: $SSH_KEY"
+            break
+        fi
+    done
+    
+    if [ -z "$SSH_KEY" ]; then
+        log_error "未找到SSH密钥文件"
+        log_error "请确保以下文件之一存在:"
+        log_error "  - ec2-ohio.pem"
+        log_error "  - ~/.ssh/id_rsa"
+        log_error "  - ~/.ssh/id_ed25519"
         exit 1
     fi
     
-    chmod 600 ec2-ohio.pem
+    # 设置密钥权限
+    chmod 600 "$SSH_KEY"
+    
+    # 检查密钥格式
+    if ! ssh-keygen -l -f "$SSH_KEY" &>/dev/null; then
+        log_error "SSH密钥格式无效: $SSH_KEY"
+        exit 1
+    fi
+    
+    log_info "✓ SSH密钥验证通过: $SSH_KEY"
 }
 
 # 从config.yaml获取节点IP
@@ -72,13 +95,34 @@ for ip in sorted(all_nodes):
     cat /tmp/node_ips.txt
 }
 
+# 测试SSH连接
+test_ssh_connection() {
+    local node_ip="$1"
+    log_info "测试SSH连接到 $node_ip..."
+    
+    if ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=10 ec2-user@$node_ip "echo 'SSH connection test'" &>/dev/null; then
+        log_info "✓ SSH连接测试成功: $node_ip"
+        return 0
+    else
+        log_error "✗ SSH连接测试失败: $node_ip"
+        return 1
+    fi
+}
+
 # 在单个节点上执行修复
 fix_node() {
     local node_ip="$1"
     log_info "正在修复节点: $node_ip"
     
+    # 先测试SSH连接
+    if ! test_ssh_connection "$node_ip"; then
+        log_error "跳过节点 $node_ip (SSH连接失败)"
+        return 1
+    fi
+    
     # 复制修复脚本到节点
-    if scp -i ec2-ohio.pem -o StrictHostKeyChecking=no fix_dolphinscheduler_s3_storage.sh ec2-user@$node_ip:~/; then
+    log_info "复制修复脚本到 $node_ip..."
+    if scp -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=30 fix_dolphinscheduler_s3_storage.sh ec2-user@$node_ip:~/; then
         log_info "✓ 脚本已复制到 $node_ip"
     else
         log_error "✗ 无法复制脚本到 $node_ip"
@@ -86,7 +130,8 @@ fix_node() {
     fi
     
     # 在节点上执行修复脚本
-    if ssh -i ec2-ohio.pem -o StrictHostKeyChecking=no ec2-user@$node_ip "chmod +x fix_dolphinscheduler_s3_storage.sh && ./fix_dolphinscheduler_s3_storage.sh"; then
+    log_info "在 $node_ip 上执行修复脚本..."
+    if ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=60 ec2-user@$node_ip "chmod +x fix_dolphinscheduler_s3_storage.sh && ./fix_dolphinscheduler_s3_storage.sh"; then
         log_info "✓ 节点 $node_ip 修复成功"
     else
         log_error "✗ 节点 $node_ip 修复失败"
