@@ -435,20 +435,20 @@ def create_hdfs_directories(ssh, config):
     hdfs_config = config.get('storage', {}).get('hdfs', {})
     hdfs_path = hdfs_config.get('upload_path', '/dolphinscheduler')
     
-    # Get EMR master node info
-    emr_config = config.get('emr', {})
-    emr_master_host = emr_config.get('master_host', hdfs_config.get('namenode_host', 'localhost'))
-    emr_master_user = emr_config.get('master_user', 'hadoop')
-    emr_master_key = emr_config.get('master_key_file')
+    # Get HDFS cluster master node info
+    hdfs_cluster_config = config.get('hdfs_cluster', {})
+    hdfs_master_host = hdfs_cluster_config.get('master_host', hdfs_config.get('namenode_host', 'localhost'))
+    hdfs_master_user = hdfs_cluster_config.get('master_user', 'hadoop')
+    hdfs_master_key = hdfs_cluster_config.get('master_key_file')
     
-    logger.info(f"Connecting to EMR master node: {emr_master_host}")
+    logger.info(f"Connecting to HDFS master node: {hdfs_master_host}")
     
-    # Connect to EMR master node
+    # Connect to HDFS master node
     try:
-        emr_ssh = connect_ssh(emr_master_host, emr_master_user, emr_master_key, config=config)
+        hdfs_ssh = connect_ssh(hdfs_master_host, hdfs_master_user, hdfs_master_key, config=config)
     except Exception as e:
-        logger.error(f"Failed to connect to EMR master node {emr_master_host}: {e}")
-        raise Exception(f"Cannot connect to EMR master node: {e}")
+        logger.error(f"Failed to connect to HDFS master node {hdfs_master_host}: {e}")
+        raise Exception(f"Cannot connect to HDFS master node: {e}")
     
     try:
         # Create HDFS directories
@@ -469,15 +469,15 @@ def create_hdfs_directories(ssh, config):
         hdfs dfs -ls {hdfs_path}/default
         """
         
-        output = execute_remote_command(emr_ssh, create_hdfs_dirs_script, timeout=60)
+        output = execute_remote_command(hdfs_ssh, create_hdfs_dirs_script, timeout=60)
         logger.info(f"HDFS directories created successfully:\n{output}")
         
-        emr_ssh.close()
+        hdfs_ssh.close()
         return True
         
     except Exception as e:
         logger.error(f"Failed to create HDFS directories: {e}")
-        emr_ssh.close()
+        hdfs_ssh.close()
         raise Exception(f"Failed to create HDFS directories: {e}")
 
 
@@ -588,20 +588,20 @@ def download_hadoop_config_from_emr(config):
     Returns:
         Dict with 'core_site' and 'hdfs_site' local file paths, or None if failed
     """
-    logger.info("Downloading Hadoop configuration files from EMR master...")
+    logger.info("Downloading Hadoop configuration files from HDFS cluster master...")
     
-    emr_config = config.get('emr', {})
+    hdfs_cluster_config = config.get('hdfs_cluster', {})
     hdfs_config = config.get('storage', {}).get('hdfs', {})
-    emr_master_host = emr_config.get('master_host', hdfs_config.get('namenode_host', 'localhost'))
-    emr_master_user = emr_config.get('master_user', 'hadoop')
-    emr_master_key = emr_config.get('master_key_file')
+    hdfs_master_host = hdfs_cluster_config.get('master_host', hdfs_config.get('namenode_host', 'localhost'))
+    hdfs_master_user = hdfs_cluster_config.get('master_user', 'hadoop')
+    hdfs_master_key = hdfs_cluster_config.get('master_key_file')
     
-    logger.info(f"Connecting to EMR master: {emr_master_host}")
+    logger.info(f"Connecting to HDFS master: {hdfs_master_host}")
     
     try:
-        emr_ssh = connect_ssh(emr_master_host, emr_master_user, emr_master_key, config=config)
+        hdfs_ssh = connect_ssh(hdfs_master_host, hdfs_master_user, hdfs_master_key, config=config)
     except Exception as e:
-        logger.error(f"Failed to connect to EMR master {emr_master_host}: {e}")
+        logger.error(f"Failed to connect to HDFS master {hdfs_master_host}: {e}")
         return None
     
     try:
@@ -631,9 +631,9 @@ def download_hadoop_config_from_emr(config):
                 continue
         
         if not hadoop_conf_dir:
-            logger.error("Could not find Hadoop configuration directory on EMR master")
+            logger.error("Could not find Hadoop configuration directory on HDFS master")
             sftp.close()
-            emr_ssh.close()
+            hdfs_ssh.close()
             return None
         
         logger.info(f"Found Hadoop config at: {hadoop_conf_dir}")
@@ -643,7 +643,7 @@ def download_hadoop_config_from_emr(config):
         sftp.get(f"{hadoop_conf_dir}/hdfs-site.xml", hdfs_site_local)
         
         sftp.close()
-        emr_ssh.close()
+        hdfs_ssh.close()
         
         # Extract fs.defaultFS from core-site.xml
         hdfs_address = None
@@ -671,8 +671,8 @@ def download_hadoop_config_from_emr(config):
         }
         
     except Exception as e:
-        logger.error(f"Failed to download Hadoop config from EMR: {e}")
-        emr_ssh.close()
+        logger.error(f"Failed to download Hadoop config from HDFS cluster: {e}")
+        hdfs_ssh.close()
         return None
 
 
