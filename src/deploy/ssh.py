@@ -111,9 +111,24 @@ def connect_ssh(host, username='ec2-user', key_file=None, port=22, config=None):
             username=username,
             key_filename=str(key_file),
             port=port,
-            timeout=15,  # Increased timeout
-            banner_timeout=30  # Add banner timeout
+            timeout=30,  # Increased timeout for slow connections
+            banner_timeout=60,  # Add banner timeout
+            auth_timeout=60,  # Authentication timeout
+            # Keep-alive settings to prevent connection drops
+            sock=None,
+            gss_auth=False,
+            gss_kex=False,
+            gss_deleg_creds=False,
+            gss_host=None,
+            allow_agent=False,
+            look_for_keys=False
         )
+        
+        # Set keep-alive to prevent connection drops during long operations
+        transport = ssh.get_transport()
+        if transport:
+            transport.set_keepalive(30)  # Send keep-alive every 30 seconds
+        
         return ssh
     except paramiko.AuthenticationException:
         raise Exception(f"SSH authentication failed to {host}. Check key file: {key_file}")
