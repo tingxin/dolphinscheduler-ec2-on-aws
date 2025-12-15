@@ -488,35 +488,66 @@ def configure_hdfs_storage(ssh, extract_dir, deploy_user, config):
     logger.info(f"Creating HDFS resource directory: {hdfs_path}")
     
     create_hdfs_dir_cmd = f"""
-    # Check if hadoop command is available
-    if ! command -v hadoop &> /dev/null; then
-        echo "Hadoop command not found, trying to find it..."
-        # Try common Hadoop installation paths
-        if [ -d /opt/hadoop ]; then
-            export HADOOP_HOME=/opt/hadoop
-        elif [ -d /usr/local/hadoop ]; then
-            export HADOOP_HOME=/usr/local/hadoop
-        elif [ -d /home/hadoop/hadoop ]; then
-            export HADOOP_HOME=/home/hadoop/hadoop
-        else
-            echo "Could not find Hadoop installation"
-            exit 1
-        fi
-        export PATH=$HADOOP_HOME/bin:$PATH
+    set -e
+    
+    # Try to find Hadoop installation
+    HADOOP_HOME=""
+    
+    # Check common Hadoop installation paths
+    if [ -d /opt/hadoop ]; then
+        HADOOP_HOME=/opt/hadoop
+    elif [ -d /usr/local/hadoop ]; then
+        HADOOP_HOME=/usr/local/hadoop
+    elif [ -d /home/hadoop/hadoop ]; then
+        HADOOP_HOME=/home/hadoop/hadoop
+    elif [ -d /opt/hadoop-3* ]; then
+        HADOOP_HOME=$(ls -d /opt/hadoop-3* 2>/dev/null | head -1)
+    elif [ -d /opt/hadoop-2* ]; then
+        HADOOP_HOME=$(ls -d /opt/hadoop-2* 2>/dev/null | head -1)
+    elif command -v hadoop &> /dev/null; then
+        HADOOP_HOME=$(dirname $(dirname $(which hadoop)))
+    else
+        echo "⚠ Hadoop installation not found, skipping HDFS directory creation"
+        echo "HDFS directory will be created on first use by DolphinScheduler"
+        exit 0
     fi
     
-    # Create HDFS directory
+    if [ -z "$HADOOP_HOME" ] || [ ! -d "$HADOOP_HOME" ]; then
+        echo "⚠ Could not determine Hadoop home directory"
+        echo "HDFS directory will be created on first use by DolphinScheduler"
+        exit 0
+    fi
+    
+    export HADOOP_HOME
+    export PATH=$HADOOP_HOME/bin:$PATH
+    
+    echo "Using Hadoop home: $HADOOP_HOME"
+    
+    # Try to create HDFS directory
     echo "Creating HDFS directory: {hdfs_path}"
-    hadoop fs -mkdir -p {hdfs_path} 2>/dev/null || true
     
-    # Set permissions
-    hadoop fs -chmod 755 {hdfs_path} 2>/dev/null || true
-    
-    # Verify directory exists
-    if hadoop fs -test -d {hdfs_path}; then
-        echo "✓ HDFS directory created successfully"
+    # Use sudo to run as hadoop user if needed
+    if [ "$(whoami)" != "{hdfs_user}" ]; then
+        # Try with sudo
+        if sudo -u {hdfs_user} hadoop fs -mkdir -p {hdfs_path} 2>/dev/null; then
+            echo "✓ HDFS directory created successfully (as {hdfs_user})"
+            sudo -u {hdfs_user} hadoop fs -chmod 755 {hdfs_path} 2>/dev/null || true
+        else
+            echo "⚠ Could not create HDFS directory as {hdfs_user}, trying as current user"
+            hadoop fs -mkdir -p {hdfs_path} 2>/dev/null || true
+            hadoop fs -chmod 755 {hdfs_path} 2>/dev/null || true
+        fi
     else
-        echo "⚠ Could not verify HDFS directory creation"
+        # Already running as hadoop user
+        hadoop fs -mkdir -p {hdfs_path} 2>/dev/null || true
+        hadoop fs -chmod 755 {hdfs_path} 2>/dev/null || true
+    fi
+    
+    # Verify directory exists (non-fatal if it fails)
+    if hadoop fs -test -d {hdfs_path} 2>/dev/null; then
+        echo "✓ HDFS directory verified: {hdfs_path}"
+    else
+        echo "⚠ Could not verify HDFS directory, but continuing"
     fi
     """
     

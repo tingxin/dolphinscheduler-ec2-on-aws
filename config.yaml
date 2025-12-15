@@ -35,23 +35,47 @@ registry:
     max_sleep_time: 3000
     max_retries: 5
 
-# ===== 资源存储配置 (HDFS) - 必填 =====
+# ===== 资源存储配置 (LOCAL) - 必填 =====
+# 用于 DolphinScheduler 资源中心存储上传的文件
 storage:
-  type: HDFS
-  # HDFS 配置 - 用于资源存储
-  hdfs:
-    namenode_host: 172.31.6.163  # 必填：HDFS NameNode 主机地址（EMR 主节点）
-    namenode_port: 8020  # 必填：HDFS NameNode 端口（默认 8020）
-    upload_path: /dolphinscheduler  # 必填：HDFS 上的资源存储路径
-    user: hadoop  # 必填：HDFS 用户名（通常是 hadoop）
+  type: LOCAL
+  # LOCAL 存储配置 - 文件存储在各节点本地磁盘
+  # 注意：仅适合开发/测试环境，生产环境建议使用 HDFS 或 S3
+  local:
+    base_dir: /tmp/dolphinscheduler  # 本地存储路径
   
-  # S3 配置 - 用于部署包分发（仍然需要）
-  bucket: tx-mageline-eks  # 必填：S3 bucket 名称（用于下载部署包）
-  region: us-east-2  # 必填：S3 区域
-  use_iam_role: true  # 推荐使用 IAM Role
-  access_key_id: ""
-  secret_access_key: ""
-  endpoint: https://s3.us-east-2.amazonaws.com
+  # ===== HDFS 存储配置 - 备用（如需切换到 HDFS）=====
+  # 如果要使用 HDFS 作为资源存储，修改 type: HDFS 并取消下面的注释
+  # type: HDFS
+  # hdfs:
+  #   namenode_host: 172.31.6.163  # HDFS NameNode 主机地址（EMR 主节点）
+  #   namenode_port: 8020  # HDFS NameNode 端口（默认 8020）
+  #   upload_path: /dolphinscheduler  # HDFS 上的资源存储路径
+  #   user: hadoop  # HDFS 用户名（通常是 hadoop）
+  
+  # ===== S3 存储配置 - 备用（如需使用 S3 作为资源存储）=====
+  # 如果要使用 S3 作为资源存储，修改 type: S3 并取消下面的注释
+  # type: S3
+  # bucket: tx-mageline-eks  # S3 bucket 名称
+  # region: us-east-2  # S3 区域
+  # upload_path: /dolphinscheduler  # S3 上的资源存储路径
+  # use_iam_role: true  # 推荐使用 IAM Role
+  # access_key_id: ""
+  # secret_access_key: ""
+  # endpoint: https://s3.us-east-2.amazonaws.com
+
+# ===== 部署包分发配置 (S3) - 可选 =====
+# 用于加速 DolphinScheduler 部署包的下载和分发
+# 如果不配置，将直接从互联网下载（较慢）
+package_distribution:
+  enabled: true  # 是否启用 S3 包分发
+  s3:
+    bucket: tx-mageline-eks  # S3 bucket 名称
+    region: us-east-2  # S3 区域
+    key: dolphinscheduler-3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz  # S3 中的包路径
+    use_iam_role: true  # 推荐使用 IAM Role
+    # access_key_id: ""  # 仅当 use_iam_role=false 时需要
+    # secret_access_key: ""  # 仅当 use_iam_role=false 时需要
 
 # ===== AWS 基础配置 - 必填 =====
 aws:

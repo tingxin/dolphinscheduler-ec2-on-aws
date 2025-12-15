@@ -71,16 +71,6 @@ def validate_config(config):
     # Validate storage configuration based on type
     storage_type = config.get('storage', {}).get('type', 'LOCAL').upper()
     
-    # S3 bucket and region are required for package distribution (regardless of storage type)
-    # because we use S3 to download the deployment package
-    s3_bucket = get_nested_value(config, 'storage.bucket')
-    s3_region = get_nested_value(config, 'storage.region')
-    
-    if not s3_bucket:
-        errors.append("Missing required field: storage.bucket (needed for package distribution)")
-    if not s3_region:
-        errors.append("Missing required field: storage.region (needed for package distribution)")
-    
     # Validate storage-specific fields
     if storage_type == 'HDFS':
         hdfs_namenode = get_nested_value(config, 'storage.hdfs.namenode_host')
@@ -91,12 +81,28 @@ def validate_config(config):
             errors.append("Missing required field: storage.hdfs.namenode_port")
     elif storage_type == 'S3':
         # S3 storage requires additional S3-specific fields
+        s3_bucket = get_nested_value(config, 'storage.bucket')
+        s3_region = get_nested_value(config, 'storage.region')
         s3_access_key = get_nested_value(config, 'storage.access_key_id')
         s3_secret_key = get_nested_value(config, 'storage.secret_access_key')
         s3_use_iam = get_nested_value(config, 'storage.use_iam_role')
         
+        if not s3_bucket:
+            errors.append("Missing required field: storage.bucket (for S3 storage)")
+        if not s3_region:
+            errors.append("Missing required field: storage.region (for S3 storage)")
         if not s3_use_iam and (not s3_access_key or not s3_secret_key):
             errors.append("S3 storage requires either use_iam_role=true or access_key_id/secret_access_key")
+    
+    # Validate package distribution configuration if enabled
+    pkg_dist_enabled = config.get('package_distribution', {}).get('enabled', False)
+    if pkg_dist_enabled:
+        pkg_bucket = get_nested_value(config, 'package_distribution.s3.bucket')
+        pkg_region = get_nested_value(config, 'package_distribution.s3.region')
+        if not pkg_bucket:
+            errors.append("Missing required field: package_distribution.s3.bucket")
+        if not pkg_region:
+            errors.append("Missing required field: package_distribution.s3.region")
     
     # Validate node counts
     master_count = config.get('cluster', {}).get('master', {}).get('count', 0)
@@ -279,6 +285,39 @@ def validate_zookeeper_connection(zk_servers):
         raise ValueError(f"Zookeeper connection failed: {str(e)}")
 
 
+def validate_storage_access(config):
+    """
+    Validate storage access based on configured storage type
+    
+    Args:
+        config: Configuration dictionary
+    
+    Raises:
+        ValueError: If storage validation fails
+    
+    Returns:
+        True if valid
+    """
+    storage_config = config.get('storage', {})
+    storage_type = storage_config.get('type', 'LOCAL').upper()
+    
+    logger.info(f"Validating {storage_type} storage access...")
+    
+    if storage_type == 'HDFS':
+        # Validate HDFS connectivity
+        validate_hdfs_access(storage_config)
+        logger.info("✓ HDFS storage validation passed")
+    elif storage_type == 'S3':
+        # Validate S3 access
+        validate_s3_access(storage_config)
+        logger.info("✓ S3 storage validation passed")
+    else:
+        # LOCAL storage doesn't need validation
+        logger.info("✓ LOCAL storage (no validation needed)")
+    
+    return True
+
+
 def validate_s3_access(storage_config):
     """
     Validate S3 access
@@ -308,3 +347,48 @@ def validate_s3_access(storage_config):
         return True
     except Exception as e:
         raise ValueError(f"S3 access failed: {str(e)}")
+
+
+def validate_hdfs_access(storage_config):
+    """
+    Validate HDFS connectivity and access
+    
+    Args:
+        storage_config: Storage configuration with HDFS settings
+    
+    Raises:
+        ValueError: If HDFS is not accessible
+    
+    Returns:
+        True if valid
+    """
+    import socket
+    
+    hdfs_config = storage_config.get('hdfs', {})
+    namenode_host = hdfs_config.get('namenode_host')
+    namenode_port = hdfs_config.get('namenode_port', 8020)
+    
+    if not namenode_host:
+        raise ValueError("HDFS namenode_host is not configured")
+    
+    try:
+        # Test HDFS NameNode connectivity
+        logger.info(f"Testing HDFS NameNode connectivity: {namenode_host}:{namenode_port}")
+        
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(10)
+        result = sock.connect_ex((namenode_host, namenode_port))
+        sock.close()
+        
+        if result == 0:
+            logger.info(f"✓ HDFS NameNode is reachable: {namenode_host}:{namenode_port}")
+            return True
+        else:
+            raise ValueError(f"HDFS NameNode is not reachable at {namenode_host}:{namenode_port}")
+            
+    except socket.gaierror as e:
+        raise ValueError(f"HDFS NameNode hostname resolution failed: {namenode_host} - {str(e)}")
+    except socket.timeout:
+        raise ValueError(f"HDFS NameNode connection timeout: {namenode_host}:{namenode_port}")
+    except Exception as e:
+        raise ValueError(f"HDFS connectivity validation failed: {str(e)}")

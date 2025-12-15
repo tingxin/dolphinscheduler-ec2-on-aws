@@ -22,7 +22,7 @@ from src.utils.logger import setup_logger
 from src.utils.validator import (
     validate_config, validate_aws_resources,
     validate_database_connection, validate_zookeeper_connection,
-    validate_s3_access
+    validate_storage_access
 )
 
 # Setup logger with detailed file logging
@@ -73,7 +73,7 @@ def create(config, dry_run, verbose):
         validate_aws_resources(cfg)
         validate_database_connection(cfg['database'])
         validate_zookeeper_connection(cfg['registry']['servers'])
-        validate_s3_access(cfg['storage'])
+        validate_storage_access(cfg)
         click.echo("✓ All validations passed")
         
         if dry_run:
@@ -340,7 +340,7 @@ def validate(config):
         validate_aws_resources(cfg)
         validate_database_connection(cfg['database'])
         validate_zookeeper_connection(cfg['registry']['servers'])
-        validate_s3_access(cfg['storage'])
+        validate_storage_access(cfg)
         
         click.echo("\n✓ Configuration is valid")
         

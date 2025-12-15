@@ -410,51 +410,55 @@ def prepare_package_on_bastion(ssh, config):
             else:
                 logger.info(f"Package exists but size is wrong ({file_size} bytes), re-downloading...")
         
-        # Priority 1: Try S3 download first (fastest)
-        s3_config = config.get('advanced', {}).get('s3_package', {})
-        if s3_config.get('enabled', False):
+        # Priority 1: Try S3 download first (fastest) - from new package_distribution config
+        pkg_dist_config = config.get('package_distribution', {})
+        if pkg_dist_config.get('enabled', False):
             logger.info("Downloading DolphinScheduler package from S3 on bastion host...")
+            s3_config = pkg_dist_config.get('s3', {})
             s3_bucket = s3_config.get('bucket')
             s3_key = s3_config.get('key')
             s3_region = s3_config.get('region', config.get('aws', {}).get('region', 'us-east-2'))
             
-            s3_download_cmd = f"""
-            set -e
-            echo "Starting S3 download from s3://{s3_bucket}/{s3_key}..."
-            
-            # Remove any partial downloads
-            rm -f {package_path}*
-            
-            # Optimize S3 download settings
-            aws configure set default.s3.max_concurrent_requests 20
-            aws configure set default.s3.max_bandwidth 100MB/s
-            aws configure set default.s3.multipart_threshold 64MB
-            aws configure set default.s3.multipart_chunksize 16MB
-            
-            # Download from S3 with optimizations
-            if aws s3 cp s3://{s3_bucket}/{s3_key} {package_path} --region {s3_region} --no-progress; then
-                echo "✓ S3 download completed successfully"
-            else
-                echo "✗ S3 download failed"
-                exit 1
-            fi
-            
-            # Verify download
-            if [ ! -f {package_path} ] || [ ! -s {package_path} ]; then
-                echo "✗ S3 download verification failed"
-                exit 1
-            fi
-            
-            file_size=$(stat -c%s {package_path})
-            echo "✓ S3 download completed, size: ${{file_size}} bytes ($((${{file_size}} / 1024 / 1024))MB)"
-            """
-            
-            try:
-                execute_remote_command(ssh, s3_download_cmd, timeout=300)
-                logger.info(f"✓ Package downloaded from S3 successfully on bastion: {package_path}")
-                return package_path
-            except Exception as e:
-                logger.warning(f"S3 download failed: {e}, falling back to internet download")
+            if not s3_bucket or not s3_key:
+                logger.warning("S3 package distribution enabled but bucket or key not configured")
+            else:
+                s3_download_cmd = f"""
+                set -e
+                echo "Starting S3 download from s3://{s3_bucket}/{s3_key}..."
+                
+                # Remove any partial downloads
+                rm -f {package_path}*
+                
+                # Optimize S3 download settings
+                aws configure set default.s3.max_concurrent_requests 20
+                aws configure set default.s3.max_bandwidth 100MB/s
+                aws configure set default.s3.multipart_threshold 64MB
+                aws configure set default.s3.multipart_chunksize 16MB
+                
+                # Download from S3 with optimizations
+                if aws s3 cp s3://{s3_bucket}/{s3_key} {package_path} --region {s3_region} --no-progress; then
+                    echo "✓ S3 download completed successfully"
+                else
+                    echo "✗ S3 download failed"
+                    exit 1
+                fi
+                
+                # Verify download
+                if [ ! -f {package_path} ] || [ ! -s {package_path} ]; then
+                    echo "✗ S3 download verification failed"
+                    exit 1
+                fi
+                
+                file_size=$(stat -c%s {package_path})
+                echo "✓ S3 download completed, size: ${{file_size}} bytes ($((${{file_size}} / 1024 / 1024))MB)"
+                """
+                
+                try:
+                    execute_remote_command(ssh, s3_download_cmd, timeout=300)
+                    logger.info(f"✓ Package downloaded from S3 successfully on bastion: {package_path}")
+                    return package_path
+                except Exception as e:
+                    logger.warning(f"S3 download failed: {e}, falling back to internet download")
         
         # Priority 2: Download from internet (fallback)
         download_url = config.get('advanced', {}).get('download_url', 
@@ -568,7 +572,7 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
         upload_common_properties(ssh, config, extract_dir)
         
         # Step 5.5: Check and configure storage based on type
-        storage_type = config.get('storage', {}).get('type', 'LOCAL')
+        storage_type = config.get('storage', {}).get('type', 'LOCAL').upper()
         if storage_type == 'S3':
             logger.info("S3 storage is configured, checking and installing S3 plugin...")
             if not check_s3_plugin_installed(ssh, extract_dir):
@@ -585,6 +589,8 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
             else:
                 logger.error("HDFS is not accessible from the node")
                 raise Exception("HDFS NameNode is not reachable. Please verify EMR cluster is running and network connectivity is correct.")
+        else:
+            logger.info("LOCAL storage is configured (default)")
         
         # Step 6: Install MySQL JDBC driver
         install_mysql_jdbc_driver(ssh, extract_dir, deploy_user)
@@ -641,9 +647,9 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                     copy_cmd = f"sudo -u {deploy_user} cp -r {extract_dir}/* {config['deployment']['install_path']}/"
                     execute_remote_command(node_ssh, copy_cmd, timeout=120)
                 else:
-                    # Priority 1: Download from S3 (most reliable)
-                    s3_config = config.get('advanced', {}).get('s3_package', {})
-                    if s3_config.get('enabled', False):
+                    # Priority 1: Download from S3 (most reliable) - from new package_distribution config
+                    pkg_dist_config = config.get('package_distribution', {})
+                    if pkg_dist_config.get('enabled', False):
                         logger.info(f"[{host}] Downloading DolphinScheduler from S3...")
                         
                         # Step 2a: Create temp directory (use home dir to avoid tmpfs limits)
@@ -655,6 +661,7 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                         """, timeout=30)
                         
                         # Step 2b: Download from S3
+                        s3_config = pkg_dist_config.get('s3', {})
                         s3_bucket = s3_config.get('bucket')
                         s3_key = s3_config.get('key')
                         s3_region = s3_config.get('region', config.get('aws', {}).get('region', 'us-east-2'))
@@ -815,7 +822,7 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                 upload_common_properties(node_ssh, config, config['deployment']['install_path'])
                 
                 # Step 6.5: Check and configure storage based on type
-                storage_type = config.get('storage', {}).get('type', 'LOCAL')
+                storage_type = config.get('storage', {}).get('type', 'LOCAL').upper()
                 if storage_type == 'S3':
                     logger.info(f"[{host}] S3 storage is configured, checking and installing S3 plugin...")
                     if not check_s3_plugin_installed(node_ssh, config['deployment']['install_path']):
@@ -831,6 +838,8 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                         configure_hdfs_storage(node_ssh, config['deployment']['install_path'], deploy_user, config)
                     else:
                         logger.warning(f"[{host}] HDFS is not accessible, but continuing deployment")
+                else:
+                    logger.info(f"[{host}] LOCAL storage is configured (default)")
                 
                 # Step 7: Install MySQL JDBC driver
                 logger.info(f"[{host}] Installing MySQL JDBC driver...")
