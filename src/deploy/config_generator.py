@@ -430,11 +430,12 @@ resource.aws.s3.endpoint={storage_config.get('endpoint', f"https://s3.{storage_c
         
         resource_storage_config = f"""# Resource Storage Configuration - HDFS
 resource.storage.type=HDFS
+resource.storage.upload.base.path={hdfs_path}
+resource.hdfs.root.user={hdfs_user}
 resource.hdfs.fs.defaultFS=hdfs://{namenode_host}:{namenode_port}
 resource.hdfs.path.prefix={hdfs_path}
 resource.hdfs.username={hdfs_user}
 resource.hdfs.kerberos.authentication.enable=false
-resource.hdfs.resource.upload.path={hdfs_path}
 """
     else:
         # Default to LOCAL storage

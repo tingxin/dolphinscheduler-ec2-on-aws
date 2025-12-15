@@ -397,7 +397,6 @@ def create_hdfs_directories(ssh, config):
     
     hdfs_config = config.get('storage', {}).get('hdfs', {})
     hdfs_path = hdfs_config.get('upload_path', '/dolphinscheduler')
-    hdfs_user = hdfs_config.get('user', 'hadoop')
     
     # Get EMR master node info
     emr_config = config.get('emr', {})
@@ -414,28 +413,31 @@ def create_hdfs_directories(ssh, config):
         logger.error(f"Failed to connect to EMR master node {emr_master_host}: {e}")
         raise Exception(f"Cannot connect to EMR master node: {e}")
     
-    create_hdfs_dirs_script = f"""
-    # Create HDFS directories
-    hdfs dfs -mkdir -p {hdfs_path}
-    hdfs dfs -chmod 755 {hdfs_path}
-    
-    # Create subdirectories
-    hdfs dfs -mkdir -p {hdfs_path}/default
-    hdfs dfs -mkdir -p {hdfs_path}/default/resources
-    hdfs dfs -chmod 755 {hdfs_path}/default
-    hdfs dfs -chmod 755 {hdfs_path}/default/resources
-    
-    # Verify directories were created
-    echo "HDFS directories created:"
-    hdfs dfs -ls {hdfs_path}
-    hdfs dfs -ls {hdfs_path}/default
-    """
-    
     try:
+        # Create HDFS directories
+        create_hdfs_dirs_script = f"""
+        # Create HDFS directories
+        hdfs dfs -mkdir -p {hdfs_path}
+        hdfs dfs -chmod 755 {hdfs_path}
+        
+        # Create subdirectories
+        hdfs dfs -mkdir -p {hdfs_path}/default
+        hdfs dfs -mkdir -p {hdfs_path}/default/resources
+        hdfs dfs -chmod 755 {hdfs_path}/default
+        hdfs dfs -chmod 755 {hdfs_path}/default/resources
+        
+        # Verify directories were created
+        echo "HDFS directories created:"
+        hdfs dfs -ls {hdfs_path}
+        hdfs dfs -ls {hdfs_path}/default
+        """
+        
         output = execute_remote_command(emr_ssh, create_hdfs_dirs_script, timeout=60)
         logger.info(f"HDFS directories created successfully:\n{output}")
+        
         emr_ssh.close()
         return True
+        
     except Exception as e:
         logger.error(f"Failed to create HDFS directories: {e}")
         emr_ssh.close()
@@ -633,7 +635,7 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
         # Step 5: Upload common.properties (critical for resource center)
         upload_common_properties(ssh, config, extract_dir)
         
-        # Step 5.5: Check and configure storage based on type
+        # Step 5.4: Check and configure storage based on type
         storage_type = config.get('storage', {}).get('type', 'LOCAL').upper()
         if storage_type == 'S3':
             logger.info("S3 storage is configured, checking and installing S3 plugin...")
@@ -660,6 +662,36 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                 raise Exception("HDFS NameNode is not reachable. Please verify EMR cluster is running and network connectivity is correct.")
         else:
             logger.info("LOCAL storage is configured (default)")
+        
+        # Step 5.6: Copy Hadoop configuration files if HDFS is configured
+        if storage_type == 'HDFS':
+            logger.info("Copying Hadoop configuration files from EMR master...")
+            try:
+                copy_hadoop_config_script = """
+                # Find Hadoop configuration directory on EMR
+                HADOOP_CONF_DIR=""
+                if [ -d /etc/hadoop/conf ]; then
+                    HADOOP_CONF_DIR=/etc/hadoop/conf
+                elif [ -d /opt/hadoop/etc/hadoop ]; then
+                    HADOOP_CONF_DIR=/opt/hadoop/etc/hadoop
+                elif [ -d /usr/local/hadoop/etc/hadoop ]; then
+                    HADOOP_CONF_DIR=/usr/local/hadoop/etc/hadoop
+                else
+                    echo "Hadoop configuration directory not found on EMR"
+                    exit 1
+                fi
+                
+                echo "Found Hadoop config at: $HADOOP_CONF_DIR"
+                
+                # Create tar archive
+                tar -czf /tmp/hadoop-conf.tar.gz -C $(dirname $HADOOP_CONF_DIR) $(basename $HADOOP_CONF_DIR)
+                echo "Hadoop config archived successfully"
+                """
+                
+                output = execute_remote_command(ssh, copy_hadoop_config_script, timeout=30)
+                logger.info(f"Hadoop config archived on EMR master:\n{output}")
+            except Exception as e:
+                logger.warning(f"Failed to archive Hadoop config: {e}")
         
         # Step 6: Install MySQL JDBC driver
         install_mysql_jdbc_driver(ssh, extract_dir, deploy_user)
