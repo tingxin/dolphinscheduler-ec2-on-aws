@@ -175,6 +175,9 @@ def configure_components(ssh, config, extract_dir):
             
             # Move to final location
             component_dir = component_dirs[component]
+            # Ensure conf directory exists
+            execute_remote_command(ssh, f"sudo mkdir -p {extract_dir}/{component_dir}/conf")
+            
             final_yaml_path = f"{extract_dir}/{component_dir}/conf/application.yaml"
             execute_remote_command(ssh, f"sudo mv {temp_remote_yaml} {final_yaml_path}")
             execute_remote_command(ssh, f"sudo chown {deploy_user}:{deploy_user} {final_yaml_path}")
@@ -197,6 +200,9 @@ def configure_components(ssh, config, extract_dir):
     try:
         temp_remote_tools_yaml = "/tmp/application_tools.yaml"
         upload_file(ssh, temp_tools_yaml, temp_remote_tools_yaml)
+        
+        # Ensure conf directory exists
+        execute_remote_command(ssh, f"sudo mkdir -p {extract_dir}/tools/conf")
         
         tools_yaml_path = f"{extract_dir}/tools/conf/application.yaml"
         execute_remote_command(ssh, f"sudo mv {temp_remote_tools_yaml} {tools_yaml_path}")
@@ -237,6 +243,9 @@ def upload_configuration_files(ssh, config, extract_dir):
         temp_remote_install_env = "/tmp/install_env.sh"
         upload_file(ssh, temp_install_env, temp_remote_install_env)
         
+        # Ensure bin/env directory exists
+        execute_remote_command(ssh, f"sudo mkdir -p {extract_dir}/bin/env")
+        
         # Move to correct location
         install_env_path = f"{extract_dir}/bin/env/install_env.sh"
         execute_remote_command(ssh, f"sudo mv {temp_remote_install_env} {install_env_path}")
@@ -260,6 +269,9 @@ def upload_configuration_files(ssh, config, extract_dir):
     try:
         temp_remote_ds_env = "/tmp/dolphinscheduler_env.sh"
         upload_file(ssh, temp_ds_env, temp_remote_ds_env)
+        
+        # Ensure bin/env directory exists
+        execute_remote_command(ssh, f"sudo mkdir -p {extract_dir}/bin/env")
         
         # Move to correct location
         ds_env_path = f"{extract_dir}/bin/env/dolphinscheduler_env.sh"
@@ -302,6 +314,9 @@ def upload_common_properties(ssh, config, extract_dir):
     try:
         temp_remote_properties = "/tmp/common.properties"
         upload_file(ssh, temp_properties, temp_remote_properties)
+        
+        # Ensure conf directory exists
+        execute_remote_command(ssh, f"sudo mkdir -p {extract_dir}/conf")
         
         # Move to correct location
         properties_path = f"{extract_dir}/conf/common.properties"
