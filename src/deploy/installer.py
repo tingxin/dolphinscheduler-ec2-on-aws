@@ -469,17 +469,22 @@ def setup_hadoop_config_on_node(node_ssh, config, host):
     hdfs_config = config.get('storage', {}).get('hdfs', {})
     emr_master_host = emr_config.get('master_host', hdfs_config.get('namenode_host', 'localhost'))
     emr_master_user = emr_config.get('master_user', 'hadoop')
+    emr_master_key = emr_config.get('master_key_file', '')
     install_path = config.get('deployment', {}).get('install_path', '/opt/dolphinscheduler')
     deploy_user = config.get('deployment', {}).get('user', 'dolphinscheduler')
+    
+    # Determine SSH key option - the key file path on the remote node
+    # The key should be available at the same path on all nodes
+    key_option = f"-i {emr_master_key}" if emr_master_key else ""
     
     try:
         # Copy Hadoop config files from EMR master to this node
         copy_cmd = f"""
         # Copy core-site.xml and hdfs-site.xml from EMR master
-        scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 \\
+        scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 {key_option} \\
             {emr_master_user}@{emr_master_host}:/etc/hadoop/conf/core-site.xml /tmp/core-site.xml
         
-        scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 \\
+        scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 {key_option} \\
             {emr_master_user}@{emr_master_host}:/etc/hadoop/conf/hdfs-site.xml /tmp/hdfs-site.xml
         
         # Verify copy
