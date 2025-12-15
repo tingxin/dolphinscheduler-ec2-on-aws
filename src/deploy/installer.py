@@ -513,9 +513,9 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                     if s3_config.get('enabled', False):
                         logger.info(f"[{host}] Downloading DolphinScheduler from S3...")
                         
-                        # Step 2a: Create temp directory
+                        # Step 2a: Create temp directory (use home dir to avoid tmpfs limits)
                         execute_remote_command(node_ssh, """
-                        TEMP_DIR="/tmp/ds_download_$(date +%s)"
+                        TEMP_DIR="/home/ec2-user/ds_download_$(date +%s)"
                         mkdir -p $TEMP_DIR
                         cd $TEMP_DIR
                         echo "Created temp directory: $TEMP_DIR"
@@ -527,7 +527,7 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                         s3_region = s3_config.get('region', config.get('aws', {}).get('region', 'us-east-2'))
                         
                         download_cmd = f"""
-                        cd /tmp/ds_download_*
+                        cd /home/ec2-user/ds_download_*
                         echo "Downloading from S3: s3://{s3_bucket}/{s3_key}..."
                         
                         # Optimize S3 download with multipart and higher concurrency
@@ -558,9 +558,9 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                     elif bastion_package_path:
                         logger.info(f"[{host}] Trying to copy DolphinScheduler from bastion host...")
                         
-                        # Step 2a: Create temp directory
+                        # Step 2a: Create temp directory (use home dir to avoid tmpfs limits)
                         execute_remote_command(node_ssh, """
-                        TEMP_DIR="/tmp/ds_download_$(date +%s)"
+                        TEMP_DIR="/home/ec2-user/ds_download_$(date +%s)"
                         mkdir -p $TEMP_DIR
                         cd $TEMP_DIR
                         echo "Created temp directory: $TEMP_DIR"
@@ -569,7 +569,7 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                         # Step 2b: Try to copy from bastion using scp (may fail due to SSH keys)
                         try:
                             copy_cmd = f"""
-                            cd /tmp/ds_download_*
+                            cd /home/ec2-user/ds_download_*
                             echo "Copying package from bastion host {first_master}..."
                             
                             # Copy from bastion using ec2-user (has SSH keys)
@@ -597,9 +597,9 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                             download_url = config.get('advanced', {}).get('download_url', 
                                 'https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz')
                             
-                            # Step 2a: Create temp directory
+                            # Step 2a: Create temp directory (use home dir to avoid tmpfs limits)
                             execute_remote_command(node_ssh, """
-                            TEMP_DIR="/tmp/ds_download_$(date +%s)"
+                            TEMP_DIR="/home/ec2-user/ds_download_$(date +%s)"
                             mkdir -p $TEMP_DIR
                             cd $TEMP_DIR
                             echo "Created temp directory: $TEMP_DIR"
@@ -608,7 +608,7 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                             # Step 2b: Download package
                             logger.info(f"[{host}] Downloading package (this may take a few minutes)...")
                             download_cmd = f"""
-                            cd /tmp/ds_download_*
+                            cd /home/ec2-user/ds_download_*
                             echo "Starting download from {download_url}..."
                             
                             # Try wget first
@@ -637,7 +637,7 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                     # Step 2c: Extract package
                     logger.info(f"[{host}] Extracting package...")
                     extract_cmd = """
-                    cd /tmp/ds_download_*
+                    cd /home/ec2-user/ds_download_*
                     echo "Extracting package..."
                     if tar -xzf apache-dolphinscheduler-3.2.0-bin.tar.gz; then
                         echo "✓ Package extracted successfully"
@@ -651,7 +651,7 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                     # Step 2d: Install to final location
                     logger.info(f"[{host}] Installing to final location...")
                     install_cmd = f"""
-                    cd /tmp/ds_download_*
+                    cd /home/ec2-user/ds_download_*
                     echo "Installing to {config['deployment']['install_path']}..."
                     sudo mkdir -p {config['deployment']['install_path']}
                     sudo cp -r apache-dolphinscheduler-3.2.0-bin/* {config['deployment']['install_path']}/
@@ -659,7 +659,7 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                     
                     # Clean up
                     cd /
-                    rm -rf /tmp/ds_download_*
+                    rm -rf /home/ec2-user/ds_download_*
                     echo "✓ Installation completed and temp files cleaned"
                     """
                     execute_remote_command(node_ssh, install_cmd, timeout=180)
