@@ -4,8 +4,113 @@ DolphinScheduler service management functions
 import time
 from src.deploy.ssh import connect_ssh, execute_remote_command
 from src.utils.logger import setup_logger
+from src.deploy.installer import download_hadoop_config_from_emr, setup_hadoop_config_on_node
 
 logger = setup_logger(__name__)
+
+
+def apply_hdfs_config_to_api_servers(config, username='ec2-user', key_file=None):
+    """
+    Apply HDFS configuration to API servers after initial startup
+    
+    This function:
+    1. Downloads Hadoop config files from HDFS cluster master
+    2. Copies them to each API server
+    3. Patches common.properties with correct HDFS settings
+    4. Restarts API servers
+    
+    Args:
+        config: Configuration dictionary
+        username: SSH username
+        key_file: SSH key file path
+    
+    Returns:
+        True if successful
+    """
+    logger.info("Configuring HDFS storage on API servers...")
+    
+    install_path = config['deployment']['install_path']
+    deploy_user = config['deployment']['user']
+    
+    storage_config = config.get('storage', {})
+    hdfs_config = storage_config.get('hdfs', {})
+    hdfs_user = hdfs_config.get('user', 'hadoop')
+    hdfs_path = hdfs_config.get('upload_path', '/dolphinscheduler')
+    
+    # Download Hadoop config files from HDFS cluster master
+    hadoop_config_files = download_hadoop_config_from_emr(config)
+    hdfs_address = None
+    
+    if hadoop_config_files:
+        hdfs_address = hadoop_config_files.get('hdfs_address')
+        logger.info(f"Got HDFS address from core-site.xml: {hdfs_address}")
+    else:
+        # Fallback to configured address
+        namenode_host = hdfs_config.get('namenode_host', 'localhost')
+        namenode_port = hdfs_config.get('namenode_port', 8020)
+        hdfs_address = f"hdfs://{namenode_host}:{namenode_port}"
+        logger.warning(f"Could not get HDFS address from cluster, using configured: {hdfs_address}")
+    
+    # Apply to each API server
+    for i, node in enumerate(config['cluster']['api']['nodes']):
+        host = node['host']
+        logger.info(f"Configuring HDFS on API server {i+1}: {host}")
+        
+        ssh = connect_ssh(host, username, key_file, config=config)
+        try:
+            # Copy Hadoop config files if available
+            if hadoop_config_files:
+                try:
+                    setup_hadoop_config_on_node(ssh, config, host, hadoop_config_files)
+                except Exception as e:
+                    logger.warning(f"Failed to copy Hadoop config to {host}: {e}")
+            
+            # Patch common.properties with HDFS settings
+            conf_file = f"{install_path}/api-server/conf/common.properties"
+            
+            patch_script = f"""
+            # Patch HDFS configuration
+            sudo sed -i 's|resource.storage.type=.*|resource.storage.type=HDFS|g' {conf_file}
+            sudo sed -i 's|resource.storage.upload.base.path=.*|resource.storage.upload.base.path={hdfs_path}|g' {conf_file}
+            sudo sed -i 's|resource.hdfs.root.user=.*|resource.hdfs.root.user={hdfs_user}|g' {conf_file}
+            sudo sed -i 's|resource.hdfs.fs.defaultFS=.*|resource.hdfs.fs.defaultFS={hdfs_address}|g' {conf_file}
+            
+            # Verify changes
+            echo "=== HDFS configuration ==="
+            grep -E "resource.storage.type|resource.hdfs.fs.defaultFS|resource.hdfs.root.user" {conf_file}
+            """
+            
+            output = execute_remote_command(ssh, patch_script, timeout=30)
+            logger.info(f"HDFS config on {host}:\n{output}")
+            
+            # Restart API server
+            logger.info(f"Restarting API server on {host}...")
+            restart_script = f"""
+            sudo -u {deploy_user} {install_path}/bin/dolphinscheduler-daemon.sh stop api-server
+            sleep 3
+            sudo -u {deploy_user} {install_path}/bin/dolphinscheduler-daemon.sh start api-server
+            """
+            execute_remote_command(ssh, restart_script, timeout=60)
+            
+            logger.info(f"✓ API server {i+1} configured and restarted on {host}")
+            time.sleep(5)
+            
+        except Exception as e:
+            logger.error(f"Failed to configure HDFS on {host}: {e}")
+            raise
+        finally:
+            ssh.close()
+    
+    # Clean up temp files
+    if hadoop_config_files and 'temp_dir' in hadoop_config_files:
+        import shutil
+        try:
+            shutil.rmtree(hadoop_config_files['temp_dir'])
+        except Exception:
+            pass
+    
+    logger.info("✓ HDFS configuration applied to all API servers")
+    return True
 
 
 def start_services(config, username='ec2-user', key_file=None):
@@ -77,6 +182,12 @@ def start_services(config, username='ec2-user', key_file=None):
             raise
         finally:
             ssh.close()
+    
+    # Apply HDFS configuration if configured
+    storage_type = config.get('storage', {}).get('type', 'LOCAL').upper()
+    if storage_type == 'HDFS':
+        logger.info("Applying HDFS configuration to API servers...")
+        apply_hdfs_config_to_api_servers(config, username, key_file)
     
     # Start Alert service
     logger.info("Starting Alert service...")

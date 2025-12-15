@@ -290,85 +290,94 @@ def upload_configuration_files(ssh, config, extract_dir):
     return True
 
 
-def upload_common_properties(ssh, config, extract_dir, hdfs_address_override=None):
+def patch_hdfs_config_post_deploy(ssh, config, install_path, hdfs_address_override=None):
     """
-    Generate and upload common.properties configuration file
+    Patch HDFS configuration in common.properties after deployment
     
-    This file is critical for resource center functionality.
-    DolphinScheduler 3.2.0 reads common.properties from each component's conf directory,
-    so we need to copy it to all component directories.
+    This function is called AFTER the cluster is deployed and services are started.
+    It only modifies the HDFS-related settings in api-server's common.properties,
+    then restarts the API server.
+    
+    This approach avoids issues with jar-embedded default configurations.
     
     Args:
-        ssh: SSH connection
+        ssh: SSH connection to API server node
         config: Configuration dictionary
-        extract_dir: DolphinScheduler extracted directory
-        hdfs_address_override: Optional HDFS address to use (from core-site.xml)
+        install_path: DolphinScheduler installation path
+        hdfs_address_override: HDFS address from core-site.xml
     
     Returns:
         True if successful
     """
-    logger.info("Generating common.properties configuration...")
+    logger.info("Patching HDFS configuration in api-server...")
     deploy_user = config['deployment']['user']
     
-    # If HDFS address override is provided, update config temporarily
+    storage_config = config.get('storage', {})
+    storage_type = storage_config.get('type', 'LOCAL').upper()
+    
+    if storage_type != 'HDFS':
+        logger.info("Storage type is not HDFS, skipping HDFS config patch")
+        return True
+    
+    hdfs_config = storage_config.get('hdfs', {})
+    hdfs_user = hdfs_config.get('user', 'hadoop')
+    hdfs_path = hdfs_config.get('upload_path', '/dolphinscheduler')
+    
+    # Use hdfs_address_override if provided (from core-site.xml)
     if hdfs_address_override:
-        storage_config = config.get('storage', {})
-        if storage_config.get('type', '').upper() == 'HDFS':
-            hdfs_config = storage_config.get('hdfs', {})
-            # Parse the override address to extract host
-            # Format: hdfs://hostname:port
-            if hdfs_address_override.startswith('hdfs://'):
-                addr = hdfs_address_override[7:]  # Remove hdfs://
-                if ':' in addr:
-                    host_part = addr.split(':')[0]
-                    # Update the config with the correct hostname
-                    hdfs_config['namenode_host'] = host_part
-                    logger.info(f"Using HDFS address from core-site.xml: {hdfs_address_override}")
+        hdfs_address = hdfs_address_override
+    else:
+        namenode_host = hdfs_config.get('namenode_host', 'localhost')
+        namenode_port = hdfs_config.get('namenode_port', 8020)
+        hdfs_address = f"hdfs://{namenode_host}:{namenode_port}"
     
-    properties_content = generate_common_properties_v320(config)
+    logger.info(f"Configuring HDFS: address={hdfs_address}, user={hdfs_user}, path={hdfs_path}")
     
-    # If we have an HDFS address override, replace the address in the generated content
-    if hdfs_address_override:
-        storage_config = config.get('storage', {})
-        if storage_config.get('type', '').upper() == 'HDFS':
-            hdfs_config = storage_config.get('hdfs', {})
-            old_addr = f"hdfs://{hdfs_config.get('namenode_host', 'localhost')}:{hdfs_config.get('namenode_port', 8020)}"
-            properties_content = properties_content.replace(old_addr, hdfs_address_override)
-            logger.info(f"Replaced HDFS address: {old_addr} -> {hdfs_address_override}")
-    
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.properties', delete=False) as f:
-        f.write(properties_content)
-        temp_properties = f.name
+    # Only patch api-server's common.properties (the one that matters for resource upload)
+    conf_file = f"{install_path}/api-server/conf/common.properties"
     
     try:
-        temp_remote_properties = "/tmp/common.properties"
-        upload_file(ssh, temp_properties, temp_remote_properties)
+        # Build sed commands - use | as delimiter to avoid issues with /
+        patch_script = f"""
+        # Patch HDFS configuration
+        sudo sed -i 's|resource.storage.type=.*|resource.storage.type=HDFS|g' {conf_file}
+        sudo sed -i 's|resource.storage.upload.base.path=.*|resource.storage.upload.base.path={hdfs_path}|g' {conf_file}
+        sudo sed -i 's|resource.hdfs.root.user=.*|resource.hdfs.root.user={hdfs_user}|g' {conf_file}
+        sudo sed -i 's|resource.hdfs.fs.defaultFS=.*|resource.hdfs.fs.defaultFS={hdfs_address}|g' {conf_file}
         
-        # Copy to root conf directory
-        execute_remote_command(ssh, f"sudo mkdir -p {extract_dir}/conf")
-        execute_remote_command(ssh, f"sudo cp {temp_remote_properties} {extract_dir}/conf/common.properties")
-        execute_remote_command(ssh, f"sudo chown {deploy_user}:{deploy_user} {extract_dir}/conf/common.properties")
-        execute_remote_command(ssh, f"sudo chmod 644 {extract_dir}/conf/common.properties")
+        # Verify changes
+        echo "=== Verifying HDFS configuration ==="
+        grep -E "resource.storage.type|resource.hdfs.fs.defaultFS|resource.hdfs.root.user" {conf_file}
+        """
         
-        # CRITICAL: Copy to each component's conf directory
-        # DolphinScheduler 3.2.0 reads common.properties from component directories
-        components = ['api-server', 'master-server', 'worker-server', 'alert-server', 'tools']
-        for component in components:
-            component_conf = f"{extract_dir}/{component}/conf"
-            execute_remote_command(ssh, f"sudo mkdir -p {component_conf}")
-            execute_remote_command(ssh, f"sudo cp {temp_remote_properties} {component_conf}/common.properties")
-            execute_remote_command(ssh, f"sudo chown {deploy_user}:{deploy_user} {component_conf}/common.properties")
-            execute_remote_command(ssh, f"sudo chmod 644 {component_conf}/common.properties")
+        output = execute_remote_command(ssh, patch_script, timeout=30)
+        logger.info(f"HDFS config patched:\n{output}")
         
-        # Clean up temp file
-        execute_remote_command(ssh, f"rm -f {temp_remote_properties}")
-        os.remove(temp_properties)
+        # Restart API server to apply changes
+        logger.info("Restarting API server to apply HDFS configuration...")
+        restart_script = f"""
+        sudo -u {deploy_user} {install_path}/bin/dolphinscheduler-daemon.sh stop api-server
+        sleep 3
+        sudo -u {deploy_user} {install_path}/bin/dolphinscheduler-daemon.sh start api-server
+        """
+        execute_remote_command(ssh, restart_script, timeout=60)
         
-        logger.info("✓ common.properties configured in all component directories")
+        logger.info("✓ HDFS configuration applied and API server restarted")
+        return True
+        
     except Exception as e:
-        logger.error(f"Failed to upload common.properties: {e}")
+        logger.error(f"Failed to patch HDFS config: {e}")
         raise
+
+
+def upload_common_properties(ssh, config, extract_dir, hdfs_address_override=None):
+    """
+    Skip common.properties modification during initial deployment
     
+    The original common.properties from the package will be used.
+    HDFS configuration will be applied later via patch_hdfs_config_post_deploy().
+    """
+    logger.info("Skipping common.properties modification (will be patched post-deployment)")
     return True
 
 
