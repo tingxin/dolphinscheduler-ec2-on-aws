@@ -317,8 +317,19 @@ def prepare_package_on_bastion(ssh, config):
             # Remove any partial downloads
             rm -f {package_path}*
             
-            # Download from S3
-            aws s3 cp s3://{s3_bucket}/{s3_key} {package_path} --region {s3_region}
+            # Optimize S3 download settings
+            aws configure set default.s3.max_concurrent_requests 20
+            aws configure set default.s3.max_bandwidth 100MB/s
+            aws configure set default.s3.multipart_threshold 64MB
+            aws configure set default.s3.multipart_chunksize 16MB
+            
+            # Download from S3 with optimizations
+            if aws s3 cp s3://{s3_bucket}/{s3_key} {package_path} --region {s3_region} --no-progress; then
+                echo "✓ S3 download completed successfully"
+            else
+                echo "✗ S3 download failed"
+                exit 1
+            fi
             
             # Verify download
             if [ ! -f {package_path} ] || [ ! -s {package_path} ]; then
@@ -519,8 +530,19 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                         cd /tmp/ds_download_*
                         echo "Downloading from S3: s3://{s3_bucket}/{s3_key}..."
                         
-                        # Download from S3 using AWS CLI
-                        aws s3 cp s3://{s3_bucket}/{s3_key} apache-dolphinscheduler-3.2.0-bin.tar.gz --region {s3_region}
+                        # Optimize S3 download with multipart and higher concurrency
+                        aws configure set default.s3.max_concurrent_requests 20
+                        aws configure set default.s3.max_bandwidth 100MB/s
+                        aws configure set default.s3.multipart_threshold 64MB
+                        aws configure set default.s3.multipart_chunksize 16MB
+                        
+                        # Download from S3 using AWS CLI with optimizations
+                        if aws s3 cp s3://{s3_bucket}/{s3_key} apache-dolphinscheduler-3.2.0-bin.tar.gz --region {s3_region} --no-progress; then
+                            echo "✓ S3 download completed successfully"
+                        else
+                            echo "✗ S3 download failed"
+                            exit 1
+                        fi
                         
                         # Verify download
                         if [ ! -f apache-dolphinscheduler-3.2.0-bin.tar.gz ] || [ ! -s apache-dolphinscheduler-3.2.0-bin.tar.gz ]; then
