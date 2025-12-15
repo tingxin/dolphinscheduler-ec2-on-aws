@@ -2188,3 +2188,244 @@ if __name__ == '__main__':
 **文档版本**: 1.0  
 **最后更新**: 2024-12-12  
 **作者**: DolphinScheduler EC2 部署工具开发团队
+
+
+## 6. DolphinScheduler 包目录结构和配置文件创建
+
+### 6.1 DolphinScheduler 3.2.0 包结构
+
+根据实际部署包分析，DolphinScheduler 3.2.0 的目录结构如下：
+
+```
+apache-dolphinscheduler-3.2.0-bin/
+├── bin/
+│   ├── env/                          # 环境配置目录（存在）
+│   │   ├── install_env.sh
+│   │   └── dolphinscheduler_env.sh
+│   ├── dolphinscheduler-daemon.sh
+│   ├── install.sh
+│   ├── start-all.sh
+│   ├── stop-all.sh
+│   └── ...
+├── conf/                             # 全局配置目录（不存在，需创建）
+│   ├── common.properties             # 需要创建
+│   └── plugins_config                # 需要创建
+├── api-server/
+│   ├── bin/
+│   ├── conf/                         # 存在
+│   │   └── application.yaml          # 需要创建
+│   └── libs/
+├── master-server/
+│   ├── bin/
+│   ├── conf/                         # 存在
+│   │   └── application.yaml          # 需要创建
+│   └── libs/
+├── worker-server/
+│   ├── bin/
+│   ├── conf/                         # 存在
+│   │   └── application.yaml          # 需要创建
+│   └── libs/
+├── alert-server/
+│   ├── bin/
+│   ├── conf/                         # 存在
+│   │   └── application.yaml          # 需要创建
+│   └── libs/
+├── tools/
+│   ├── bin/
+│   ├── conf/                         # 存在
+│   │   └── application.yaml          # 需要创建
+│   ├── libs/
+│   └── sql/
+├── standalone-server/
+│   ├── bin/
+│   ├── conf/
+│   └── libs/
+├── plugins/                          # 插件目录（需创建 S3 插件）
+│   └── dolphinscheduler-storage-plugin-s3/
+├── licenses/
+├── LICENSE
+└── NOTICE
+```
+
+### 6.2 关键发现
+
+#### 6.2.1 根目录 conf 不存在
+- **问题**: 根目录下的 `conf/` 目录在原始包中不存在
+- **影响**: `common.properties` 文件无法直接放置
+- **解决**: 在上传 `common.properties` 前创建 `conf/` 目录
+
+#### 6.2.2 各组件 conf 目录存在
+- `api-server/conf/` ✓ 存在
+- `master-server/conf/` ✓ 存在
+- `worker-server/conf/` ✓ 存在
+- `alert-server/conf/` ✓ 存在
+- `tools/conf/` ✓ 存在
+
+#### 6.2.3 bin/env 目录存在
+- `bin/env/` ✓ 存在
+- 包含 `install_env.sh` 和 `dolphinscheduler_env.sh` 的占位符
+
+### 6.3 配置文件创建修复
+
+#### 6.3.1 修复方案
+
+在上传配置文件前，确保目标目录存在：
+
+```python
+# 1. 上传 common.properties 前
+execute_remote_command(ssh, f"sudo mkdir -p {extract_dir}/conf")
+
+# 2. 上传 application.yaml 前（每个组件）
+execute_remote_command(ssh, f"sudo mkdir -p {extract_dir}/{component_dir}/conf")
+
+# 3. 上传 install_env.sh 和 dolphinscheduler_env.sh 前
+execute_remote_command(ssh, f"sudo mkdir -p {extract_dir}/bin/env")
+```
+
+#### 6.3.2 实现位置
+
+修复已在以下函数中实现：
+
+1. **`upload_configuration_files()`** - 上传 install_env.sh 和 dolphinscheduler_env.sh
+   - 添加: `sudo mkdir -p {extract_dir}/bin/env`
+
+2. **`upload_common_properties()`** - 上传 common.properties
+   - 添加: `sudo mkdir -p {extract_dir}/conf`
+
+3. **`configure_components()`** - 上传 application.yaml
+   - 添加: `sudo mkdir -p {extract_dir}/{component_dir}/conf` (每个组件)
+   - 添加: `sudo mkdir -p {extract_dir}/tools/conf` (tools 组件)
+
+#### 6.3.3 幂等性保证
+
+使用 `mkdir -p` 命令确保幂等性：
+- 如果目录已存在，不会报错
+- 如果目录不存在，会创建
+- 可以安全地重复执行
+
+### 6.4 S3 存储插件配置
+
+#### 6.4.1 插件安装位置
+```
+apache-dolphinscheduler-3.2.0-bin/
+└── plugins/
+    └── dolphinscheduler-storage-plugin-s3-3.2.0.jar
+```
+
+#### 6.4.2 插件配置文件
+```
+apache-dolphinscheduler-3.2.0-bin/conf/plugins_config
+```
+
+内容示例：
+```
+--storage-plugins--
+dolphinscheduler-storage-plugin-s3
+--end--
+```
+
+#### 6.4.3 common.properties 中的 S3 配置
+```properties
+resource.storage.type=S3
+resource.aws.region=us-east-2
+resource.aws.s3.bucket.name=tx-mageline-eks
+resource.aws.s3.upload.folder=/dolphinscheduler
+resource.aws.s3.endpoint=https://s3.us-east-2.amazonaws.com
+```
+
+### 6.5 部署流程中的目录创建时机
+
+```
+部署流程:
+  ↓
+Step 1: 下载/提取包
+  ↓
+Step 2: 设置权限
+  ↓
+Step 3: 创建资源目录 (/tmp/dolphinscheduler)
+  ↓
+Step 4: 上传配置文件
+  ├─ 创建 bin/env 目录 ← 关键
+  ├─ 上传 install_env.sh
+  ├─ 上传 dolphinscheduler_env.sh
+  └─ 验证上传成功
+  ↓
+Step 5: 上传 common.properties
+  ├─ 创建 conf 目录 ← 关键
+  ├─ 上传 common.properties
+  └─ 验证上传成功
+  ↓
+Step 5.5: 检查和安装 S3 插件
+  ├─ 检查插件是否已安装
+  ├─ 如果未安装，下载并安装
+  └─ 配置 plugins_config
+  ↓
+Step 6: 安装 MySQL JDBC 驱动
+  ↓
+Step 7: 初始化数据库
+  ↓
+Step 8: 配置组件
+  ├─ 创建各组件 conf 目录 ← 关键
+  ├─ 上传 application.yaml
+  └─ 验证上传成功
+```
+
+### 6.6 验证清单
+
+部署时应验证以下目录结构：
+
+```bash
+# 验证根目录 conf
+ls -la /opt/dolphinscheduler/conf/
+# 应该包含: common.properties, plugins_config
+
+# 验证各组件 conf
+ls -la /opt/dolphinscheduler/api-server/conf/
+ls -la /opt/dolphinscheduler/master-server/conf/
+ls -la /opt/dolphinscheduler/worker-server/conf/
+ls -la /opt/dolphinscheduler/alert-server/conf/
+ls -la /opt/dolphinscheduler/tools/conf/
+# 每个目录应该包含: application.yaml
+
+# 验证 bin/env
+ls -la /opt/dolphinscheduler/bin/env/
+# 应该包含: install_env.sh, dolphinscheduler_env.sh
+
+# 验证 S3 插件
+ls -la /opt/dolphinscheduler/plugins/
+# 应该包含: dolphinscheduler-storage-plugin-s3-3.2.0.jar
+```
+
+### 6.7 故障排除
+
+#### 问题: "No such file or directory" 错误
+
+**症状**:
+```
+ERROR - Command failed (exit code 1): mv: cannot move '/tmp/common.properties' to '/opt/dolphinscheduler/conf/common.properties': No such file or directory
+```
+
+**原因**: 目标目录不存在
+
+**解决方案**:
+1. 确保在移动文件前创建目录
+2. 使用 `mkdir -p` 确保幂等性
+3. 验证目录权限正确
+
+#### 问题: 配置文件未被读取
+
+**症状**: 
+- S3 存储未被使用
+- 系统仍然使用 HDFS 存储
+
+**原因**: 
+- `common.properties` 未被正确放置
+- 配置文件权限不正确
+- 服务未重启
+
+**解决方案**:
+1. 验证文件位置: `ls -la /opt/dolphinscheduler/conf/common.properties`
+2. 验证文件权限: `chmod 644 /opt/dolphinscheduler/conf/common.properties`
+3. 验证文件内容: `grep resource.storage.type /opt/dolphinscheduler/conf/common.properties`
+4. 重启服务: `bash bin/dolphinscheduler-daemon.sh restart api-server`
+

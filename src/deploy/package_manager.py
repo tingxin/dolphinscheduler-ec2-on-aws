@@ -260,6 +260,46 @@ def setup_package_permissions(ssh, extract_dir, deploy_user):
     return True
 
 
+def check_hdfs_connectivity(ssh, config):
+    """
+    Check if HDFS is accessible from the node
+    
+    Args:
+        ssh: SSH connection
+        config: Configuration dictionary
+    
+    Returns:
+        True if HDFS is accessible, False otherwise
+    """
+    logger.info("Checking HDFS connectivity...")
+    
+    storage_config = config.get('storage', {})
+    hdfs_config = storage_config.get('hdfs', {})
+    namenode_host = hdfs_config.get('namenode_host', 'localhost')
+    namenode_port = hdfs_config.get('namenode_port', 8020)
+    
+    check_cmd = f"""
+    # Check if HDFS NameNode is reachable
+    if nc -z -w 5 {namenode_host} {namenode_port} 2>/dev/null; then
+        echo "HDFS_REACHABLE"
+    else
+        echo "HDFS_NOT_REACHABLE"
+    fi
+    """
+    
+    try:
+        result = execute_remote_command(ssh, check_cmd, timeout=15)
+        if "HDFS_REACHABLE" in result:
+            logger.info(f"✓ HDFS NameNode is reachable at {namenode_host}:{namenode_port}")
+            return True
+        else:
+            logger.warning(f"⚠ HDFS NameNode is NOT reachable at {namenode_host}:{namenode_port}")
+            return False
+    except Exception as e:
+        logger.warning(f"Could not check HDFS connectivity: {e}")
+        return False
+
+
 def check_s3_plugin_installed(ssh, extract_dir):
     """
     Check if S3 storage plugin is installed
@@ -418,5 +458,74 @@ dolphinscheduler-storage-plugin-s3
     except Exception as e:
         logger.error(f"Failed to configure S3 storage: {e}")
         raise
+    
+    return True
+
+
+def configure_hdfs_storage(ssh, extract_dir, deploy_user, config):
+    """
+    Configure HDFS storage for DolphinScheduler
+    
+    Args:
+        ssh: SSH connection
+        extract_dir: DolphinScheduler extracted directory
+        deploy_user: Deployment user
+        config: Configuration dictionary
+    
+    Returns:
+        True if successful
+    """
+    logger.info("Configuring HDFS storage...")
+    
+    storage_config = config.get('storage', {})
+    hdfs_config = storage_config.get('hdfs', {})
+    namenode_host = hdfs_config.get('namenode_host', 'localhost')
+    namenode_port = hdfs_config.get('namenode_port', 8020)
+    hdfs_user = hdfs_config.get('user', 'hadoop')
+    hdfs_path = hdfs_config.get('upload_path', '/dolphinscheduler')
+    
+    # Create HDFS resource directory if it doesn't exist
+    logger.info(f"Creating HDFS resource directory: {hdfs_path}")
+    
+    create_hdfs_dir_cmd = f"""
+    # Check if hadoop command is available
+    if ! command -v hadoop &> /dev/null; then
+        echo "Hadoop command not found, trying to find it..."
+        # Try common Hadoop installation paths
+        if [ -d /opt/hadoop ]; then
+            export HADOOP_HOME=/opt/hadoop
+        elif [ -d /usr/local/hadoop ]; then
+            export HADOOP_HOME=/usr/local/hadoop
+        elif [ -d /home/hadoop/hadoop ]; then
+            export HADOOP_HOME=/home/hadoop/hadoop
+        else
+            echo "Could not find Hadoop installation"
+            exit 1
+        fi
+        export PATH=$HADOOP_HOME/bin:$PATH
+    fi
+    
+    # Create HDFS directory
+    echo "Creating HDFS directory: {hdfs_path}"
+    hadoop fs -mkdir -p {hdfs_path} 2>/dev/null || true
+    
+    # Set permissions
+    hadoop fs -chmod 755 {hdfs_path} 2>/dev/null || true
+    
+    # Verify directory exists
+    if hadoop fs -test -d {hdfs_path}; then
+        echo "✓ HDFS directory created successfully"
+    else
+        echo "⚠ Could not verify HDFS directory creation"
+    fi
+    """
+    
+    try:
+        result = execute_remote_command(ssh, create_hdfs_dir_cmd, timeout=60)
+        logger.info(f"HDFS directory creation output: {result}")
+        logger.info("✓ HDFS storage configured")
+    except Exception as e:
+        logger.warning(f"Could not create HDFS directory: {e}")
+        logger.info("Continuing deployment - HDFS directory may already exist or will be created on first use")
     
     return True

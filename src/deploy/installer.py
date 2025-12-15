@@ -18,7 +18,9 @@ from src.deploy.package_manager import (
     setup_package_permissions,
     check_s3_plugin_installed,
     install_s3_plugin,
-    configure_s3_storage
+    configure_s3_storage,
+    check_hdfs_connectivity,
+    configure_hdfs_storage
 )
 from src.utils.logger import setup_logger
 
@@ -565,7 +567,7 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
         # Step 5: Upload common.properties (critical for resource center)
         upload_common_properties(ssh, config, extract_dir)
         
-        # Step 5.5: Check and install S3 plugin if S3 storage is configured
+        # Step 5.5: Check and configure storage based on type
         storage_type = config.get('storage', {}).get('type', 'LOCAL')
         if storage_type == 'S3':
             logger.info("S3 storage is configured, checking and installing S3 plugin...")
@@ -575,6 +577,14 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                 configure_s3_storage(ssh, extract_dir, deploy_user, config)
             else:
                 logger.info("S3 plugin already installed")
+        elif storage_type == 'HDFS':
+            logger.info("HDFS storage is configured, checking HDFS connectivity...")
+            if check_hdfs_connectivity(ssh, config):
+                logger.info("HDFS is accessible, configuring HDFS storage...")
+                configure_hdfs_storage(ssh, extract_dir, deploy_user, config)
+            else:
+                logger.error("HDFS is not accessible from the node")
+                raise Exception("HDFS NameNode is not reachable. Please verify EMR cluster is running and network connectivity is correct.")
         
         # Step 6: Install MySQL JDBC driver
         install_mysql_jdbc_driver(ssh, extract_dir, deploy_user)
@@ -804,7 +814,7 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                 logger.info(f"[{host}] Uploading common.properties...")
                 upload_common_properties(node_ssh, config, config['deployment']['install_path'])
                 
-                # Step 6.5: Check and install S3 plugin if S3 storage is configured
+                # Step 6.5: Check and configure storage based on type
                 storage_type = config.get('storage', {}).get('type', 'LOCAL')
                 if storage_type == 'S3':
                     logger.info(f"[{host}] S3 storage is configured, checking and installing S3 plugin...")
@@ -814,6 +824,13 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                         configure_s3_storage(node_ssh, config['deployment']['install_path'], deploy_user, config)
                     else:
                         logger.info(f"[{host}] S3 plugin already installed")
+                elif storage_type == 'HDFS':
+                    logger.info(f"[{host}] HDFS storage is configured, checking HDFS connectivity...")
+                    if check_hdfs_connectivity(node_ssh, config):
+                        logger.info(f"[{host}] HDFS is accessible, configuring HDFS storage...")
+                        configure_hdfs_storage(node_ssh, config['deployment']['install_path'], deploy_user, config)
+                    else:
+                        logger.warning(f"[{host}] HDFS is not accessible, but continuing deployment")
                 
                 # Step 7: Install MySQL JDBC driver
                 logger.info(f"[{host}] Installing MySQL JDBC driver...")

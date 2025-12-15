@@ -88,7 +88,9 @@ def generate_application_yaml_v320(config, component='master'):
     
     # Add resource storage configuration for all components
     storage_config = config.get('storage', {})
-    if storage_config.get('type') == 'S3':
+    storage_type = storage_config.get('type', 'LOCAL').upper()
+    
+    if storage_type == 'S3':
         yaml_content += f"""# Resource Storage Configuration
 resource-storage:
   type: S3
@@ -101,8 +103,27 @@ resource-storage:
     endpoint: {storage_config.get('endpoint', f"https://s3.{storage_config.get('region', 'us-east-2')}.amazonaws.com")}
 
 """
+    elif storage_type == 'HDFS':
+        hdfs_config = storage_config.get('hdfs', {})
+        namenode_host = hdfs_config.get('namenode_host', 'localhost')
+        namenode_port = hdfs_config.get('namenode_port', 8020)
+        hdfs_user = hdfs_config.get('user', 'hadoop')
+        hdfs_path = hdfs_config.get('upload_path', '/dolphinscheduler')
+        
+        yaml_content += f"""# Resource Storage Configuration
+resource-storage:
+  type: HDFS
+  hdfs:
+    fs-default-name: hdfs://{namenode_host}:{namenode_port}
+    resource-upload-path: {hdfs_path}
+    hadoop-security-authentication: simple
+    hadoop.security.authentication: simple
+    hadoop.security.authorization: false
+    hadoop.user.name: {hdfs_user}
+
+"""
     else:
-        # Default to local storage if S3 not configured
+        # Default to local storage if not configured
         yaml_content += f"""# Resource Storage Configuration
 resource-storage:
   type: LOCAL
@@ -398,6 +419,21 @@ resource.aws.s3.upload.folder={storage_config.get('upload_path', '/dolphinschedu
 resource.aws.access.key.id={storage_config.get('access_key_id', '')}
 resource.aws.secret.access.key={storage_config.get('secret_access_key', '')}
 resource.aws.s3.endpoint={storage_config.get('endpoint', f"https://s3.{storage_config.get('region', 'us-east-2')}.amazonaws.com")}
+"""
+    elif storage_type == 'HDFS':
+        # HDFS storage configuration
+        hdfs_config = storage_config.get('hdfs', {})
+        namenode_host = hdfs_config.get('namenode_host', 'localhost')
+        namenode_port = hdfs_config.get('namenode_port', 8020)
+        hdfs_user = hdfs_config.get('user', 'hadoop')
+        hdfs_path = hdfs_config.get('upload_path', '/dolphinscheduler')
+        
+        resource_storage_config = f"""# Resource Storage Configuration - HDFS
+resource.storage.type=HDFS
+resource.hdfs.fs.defaultFS=hdfs://{namenode_host}:{namenode_port}
+resource.hdfs.path.prefix={hdfs_path}
+resource.hdfs.username={hdfs_user}
+resource.hdfs.kerberos.authentication.enable=false
 """
     else:
         # Default to LOCAL storage

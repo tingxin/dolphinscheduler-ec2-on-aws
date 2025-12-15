@@ -21,7 +21,9 @@ from .package_manager import (
     setup_package_permissions,
     check_s3_plugin_installed,
     install_s3_plugin,
-    configure_s3_storage
+    configure_s3_storage,
+    check_hdfs_connectivity,
+    configure_hdfs_storage
 )
 
 # Node initialization
@@ -56,6 +58,8 @@ __all__ = [
     'check_s3_plugin_installed',
     'install_s3_plugin',
     'configure_s3_storage',
+    'check_hdfs_connectivity',
+    'configure_hdfs_storage',
     'initialize_node',
     'create_deployment_user',
     'setup_ssh_keys',
