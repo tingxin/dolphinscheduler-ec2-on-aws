@@ -566,47 +566,47 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                             
                         # Priority 3: Download from internet (fallback)
                         else:
-                        # Option 2: Download from internet (fallback)
-                        logger.info(f"[{host}] Downloading DolphinScheduler from internet...")
-                        download_url = config.get('advanced', {}).get('download_url', 
-                            'https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz')
-                        
-                        # Step 2a: Create temp directory
-                        execute_remote_command(node_ssh, """
-                        TEMP_DIR="/tmp/ds_download_$(date +%s)"
-                        mkdir -p $TEMP_DIR
-                        cd $TEMP_DIR
-                        echo "Created temp directory: $TEMP_DIR"
-                        """, timeout=30)
-                        
-                        # Step 2b: Download package
-                        logger.info(f"[{host}] Downloading package (this may take a few minutes)...")
-                        download_cmd = f"""
-                        cd /tmp/ds_download_*
-                        echo "Starting download from {download_url}..."
-                        
-                        # Try wget first
-                        if wget --progress=dot:giga --timeout=600 --tries=2 "{download_url}" -O apache-dolphinscheduler-3.2.0-bin.tar.gz 2>&1; then
-                            echo "✓ Download completed with wget"
-                        else
-                            echo "wget failed, trying curl..."
-                            if curl -L --connect-timeout 30 --max-time 600 --retry 2 "{download_url}" -o apache-dolphinscheduler-3.2.0-bin.tar.gz; then
-                                echo "✓ Download completed with curl"
+                            # Option 2: Download from internet (fallback)
+                            logger.info(f"[{host}] Downloading DolphinScheduler from internet...")
+                            download_url = config.get('advanced', {}).get('download_url', 
+                                'https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz')
+                            
+                            # Step 2a: Create temp directory
+                            execute_remote_command(node_ssh, """
+                            TEMP_DIR="/tmp/ds_download_$(date +%s)"
+                            mkdir -p $TEMP_DIR
+                            cd $TEMP_DIR
+                            echo "Created temp directory: $TEMP_DIR"
+                            """, timeout=30)
+                            
+                            # Step 2b: Download package
+                            logger.info(f"[{host}] Downloading package (this may take a few minutes)...")
+                            download_cmd = f"""
+                            cd /tmp/ds_download_*
+                            echo "Starting download from {download_url}..."
+                            
+                            # Try wget first
+                            if wget --progress=dot:giga --timeout=600 --tries=2 "{download_url}" -O apache-dolphinscheduler-3.2.0-bin.tar.gz 2>&1; then
+                                echo "✓ Download completed with wget"
                             else
-                                echo "✗ Download failed"
+                                echo "wget failed, trying curl..."
+                                if curl -L --connect-timeout 30 --max-time 600 --retry 2 "{download_url}" -o apache-dolphinscheduler-3.2.0-bin.tar.gz; then
+                                    echo "✓ Download completed with curl"
+                                else
+                                    echo "✗ Download failed"
+                                    exit 1
+                                fi
+                            fi
+                            
+                            # Verify download
+                            if [ ! -f apache-dolphinscheduler-3.2.0-bin.tar.gz ] || [ ! -s apache-dolphinscheduler-3.2.0-bin.tar.gz ]; then
+                                echo "✗ Download verification failed"
                                 exit 1
                             fi
-                        fi
-                        
-                        # Verify download
-                        if [ ! -f apache-dolphinscheduler-3.2.0-bin.tar.gz ] || [ ! -s apache-dolphinscheduler-3.2.0-bin.tar.gz ]; then
-                            echo "✗ Download verification failed"
-                            exit 1
-                        fi
-                        
-                        echo "✓ Download verified, size: $(du -h apache-dolphinscheduler-3.2.0-bin.tar.gz | cut -f1)"
-                        """
-                        execute_remote_command(node_ssh, download_cmd, timeout=700)
+                            
+                            echo "✓ Download verified, size: $(du -h apache-dolphinscheduler-3.2.0-bin.tar.gz | cut -f1)"
+                            """
+                            execute_remote_command(node_ssh, download_cmd, timeout=700)
                     
                     # Step 2c: Extract package
                     logger.info(f"[{host}] Extracting package...")
