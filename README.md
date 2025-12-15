@@ -6,30 +6,57 @@
 
 ### 1. 堡垒机环境准备
 
-**推荐堡垒机配置：**
-- EC2 实例类型：t3.medium 或更高
-- 操作系统：Amazon Linux 2023
-- 磁盘空间：至少 20GB
-- 网络：位于目标VPC内，可访问互联网
-
-**必需软件安装：**
+**创建堡垒机：**
 ```bash
-# 1. Python 3.12+ 和 conda
-sudo yum update -y
-sudo yum install -y python3 python3-pip
+# 1. 在AWS控制台创建EC2实例
+# - AMI: Amazon Linux 2023 (ami-058a8a5ab36292159)
+# - 实例类型: t3.medium 或更高
+# - 存储: 20GB gp3
+# - VPC: 选择目标VPC
+# - 子网: 选择公有子网（需要互联网访问）
+# - 安全组: 允许SSH (22)和必要的出站流量
+# - Key Pair: 选择或创建SSH密钥对
 
-# 2. AWS CLI v2
+# 2. 分配弹性IP（可选，便于固定访问）
+aws ec2 allocate-address --domain vpc
+aws ec2 associate-address --instance-id i-xxxxxxxxx --allocation-id eipalloc-xxxxxxxxx
+```
+
+**堡垒机软件环境设置：**
+```bash
+# SSH连接到堡垒机
+ssh -i /path/to/your-key.pem ec2-user@your-bastion-ip
+
+# 1. 系统更新
+sudo yum update -y
+
+# 2. 安装基础工具
+sudo yum install -y git wget curl unzip htop mysql
+
+# 3. 安装Python 3.12和conda
+# 下载Miniconda
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh -b -p $HOME/miniconda3
+echo 'export PATH="$HOME/miniconda3/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+
+# 创建Python 3.12环境
+conda create -n py312 python=3.12 -y
+conda activate py312
+
+# 4. 安装AWS CLI v2
 curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
 unzip awscliv2.zip
 sudo ./aws/install
 
-# 3. 验证安装
-python3 --version  # 应该 >= 3.12
+# 5. 验证安装
+python --version    # 应该是 3.12.x
 aws --version      # 应该是 v2.x
+conda --version    # 验证conda可用
 ```
 
-**AWS 权限配置：**
-堡垒机需要以下IAM权限（建议使用IAM Role）：
+**AWS权限配置：**
+为堡垒机创建IAM Role并附加以下策略：
 ```json
 {
     "Version": "2012-10-17",
@@ -40,9 +67,10 @@ aws --version      # 应该是 v2.x
                 "ec2:*",
                 "elasticloadbalancing:*",
                 "iam:PassRole",
-                "s3:GetObject",
-                "s3:PutObject",
-                "s3:ListBucket"
+                "s3:*",
+                "rds:DescribeDBInstances",
+                "elasticmapreduce:ListClusters",
+                "elasticmapreduce:DescribeCluster"
             ],
             "Resource": "*"
         }
@@ -50,14 +78,41 @@ aws --version      # 应该是 v2.x
 }
 ```
 
-**SSH 密钥配置：**
+**SSH密钥配置：**
 ```bash
-# 1. 下载EC2 Key Pair私钥到堡垒机
-# 2. 设置正确权限
-chmod 400 /path/to/your-key.pem
+# 1. 将EC2 Key Pair私钥上传到堡垒机
+scp -i /path/to/your-key.pem /path/to/your-key.pem ec2-user@bastion-ip:~/
 
-# 3. 验证密钥可用
-ssh-keygen -l -f /path/to/your-key.pem
+# 2. 在堡垒机上设置密钥权限
+chmod 400 ~/your-key.pem
+
+# 3. 配置SSH客户端（可选）
+cat >> ~/.ssh/config << EOF
+Host *
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+EOF
+
+# 4. 验证密钥可用
+ssh-keygen -l -f ~/your-key.pem
+```
+
+**项目代码准备：**
+```bash
+# 在堡垒机上克隆项目
+cd /home/ec2-user/work
+git clone https://github.com/tingxin/dolphinscheduler-ec2-on-aws.git
+cd dolphinscheduler-ec2-on-aws
+git checkout 3.2.0dev
+
+# 安装Python依赖
+conda activate py312
+pip install -r requirements.txt
+
+# 验证工具可用
+python cli.py --help
 ```
 
 ### 2. AWS 基础设施准备
@@ -87,34 +142,219 @@ ssh-keygen -l -f /path/to/your-key.pem
 - All traffic (0-65535): 目标为0.0.0.0/0
 ```
 
-**RDS MySQL 准备：**
+**RDS MySQL 数据库准备：**
+
+*步骤1：创建RDS实例*
 ```bash
-# 1. 创建RDS MySQL 8.0实例
-# 2. 创建数据库和用户
-mysql -h your-rds-endpoint -u root -p
-CREATE DATABASE dolphinscheduler DEFAULT CHARACTER SET utf8 DEFAULT COLLATE utf8_general_ci;
+# 在AWS控制台创建RDS MySQL 8.0实例
+# - 引擎版本: MySQL 8.0.35 或更高
+# - 实例类型: db.t3.medium 或更高
+# - 存储: 100GB gp3（可根据需要调整）
+# - 多可用区: 建议启用（生产环境）
+# - VPC: 选择与DolphinScheduler相同的VPC
+# - 子网组: 选择数据库子网组
+# - 安全组: 允许来自DolphinScheduler安全组的3306端口访问
+# - 数据库名称: 留空（稍后手动创建）
+# - 主用户名: root
+# - 主密码: 设置强密码
+```
+
+*步骤2：配置数据库和用户权限*
+```bash
+# 从堡垒机连接到RDS
+mysql -h your-rds-endpoint.cbore8wpy3mc.us-east-2.rds.amazonaws.com -u root -p
+
+# 创建DolphinScheduler数据库
+CREATE DATABASE dolphinscheduler DEFAULT CHARACTER SET utf8mb4 DEFAULT COLLATE utf8mb4_unicode_ci;
+
+# 创建专用用户并授权
 CREATE USER 'dsadmin'@'%' IDENTIFIED BY 'ds123456';
 GRANT ALL PRIVILEGES ON dolphinscheduler.* TO 'dsadmin'@'%';
+
+# 授予必要的系统权限（DolphinScheduler需要）
+GRANT SELECT ON mysql.proc TO 'dsadmin'@'%';
+GRANT SELECT ON information_schema.* TO 'dsadmin'@'%';
+GRANT PROCESS ON *.* TO 'dsadmin'@'%';
+
+# 刷新权限
 FLUSH PRIVILEGES;
+
+# 验证用户权限
+SHOW GRANTS FOR 'dsadmin'@'%';
+
+# 测试连接
+mysql -h your-rds-endpoint -u dsadmin -p dolphinscheduler
+SHOW DATABASES;
+USE dolphinscheduler;
+SHOW TABLES;  # 应该为空（初始状态）
 ```
 
-**Zookeeper 集群准备：**
-```bash
-# 可以使用Amazon MSK或自建Zookeeper集群
-# 确保DolphinScheduler节点可以访问Zookeeper端口2181
+*步骤3：优化MySQL配置（可选）*
+```sql
+-- 在RDS参数组中设置以下参数（推荐值）
+-- max_connections = 1000
+-- innodb_buffer_pool_size = 70% of available memory
+-- innodb_log_file_size = 256M
+-- query_cache_size = 0 (MySQL 8.0中已废弃)
+-- sql_mode = STRICT_TRANS_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO
 ```
 
-**S3 配置：**
+**EMR Zookeeper 集群准备：**
+
+*方式1：使用Amazon EMR（推荐）*
 ```bash
-# 1. 创建S3 bucket用于资源存储
+# 1. 在AWS控制台创建EMR集群
+# - EMR版本: 6.15.0 或更高
+# - 应用程序: 选择Zookeeper
+# - 实例类型: 
+#   - Master: m5.xlarge
+#   - Core: m5.large (至少3个节点，奇数个)
+# - VPC: 选择与DolphinScheduler相同的VPC
+# - 子网: 选择私有子网
+# - 安全组: 允许来自DolphinScheduler安全组的2181端口访问
+
+# 2. 获取Zookeeper连接信息
+aws emr describe-cluster --cluster-id j-xxxxxxxxx
+# 记录Master节点的私有IP地址
+
+# 3. 测试Zookeeper连接
+telnet master-private-ip 2181
+# 输入: ruok
+# 应该返回: imok
+```
+
+*方式2：使用Amazon MSK（Kafka自带Zookeeper）*
+```bash
+# 1. 创建MSK集群
+aws kafka create-cluster \
+    --cluster-name dolphinscheduler-zk \
+    --broker-node-group-info file://broker-info.json \
+    --kafka-version "2.8.1"
+
+# 2. 获取Zookeeper连接字符串
+aws kafka describe-cluster --cluster-arn arn:aws:kafka:region:account:cluster/name
+```
+
+*方式3：自建Zookeeper集群*
+```bash
+# 在3个EC2实例上安装Zookeeper
+# 实例配置: t3.medium, Amazon Linux 2023
+# 确保跨不同可用区部署
+
+# 每个节点执行：
+sudo yum install -y java-11-amazon-corretto
+wget https://downloads.apache.org/zookeeper/zookeeper-3.8.3/apache-zookeeper-3.8.3-bin.tar.gz
+tar -xzf apache-zookeeper-3.8.3-bin.tar.gz
+sudo mv apache-zookeeper-3.8.3-bin /opt/zookeeper
+
+# 配置zoo.cfg（每个节点）
+sudo tee /opt/zookeeper/conf/zoo.cfg << EOF
+tickTime=2000
+dataDir=/var/lib/zookeeper
+clientPort=2181
+initLimit=5
+syncLimit=2
+server.1=zk1-private-ip:2888:3888
+server.2=zk2-private-ip:2888:3888
+server.3=zk3-private-ip:2888:3888
+EOF
+
+# 设置节点ID（每个节点不同）
+sudo mkdir -p /var/lib/zookeeper
+echo "1" | sudo tee /var/lib/zookeeper/myid  # 节点1
+# echo "2" | sudo tee /var/lib/zookeeper/myid  # 节点2
+# echo "3" | sudo tee /var/lib/zookeeper/myid  # 节点3
+
+# 启动Zookeeper
+sudo /opt/zookeeper/bin/zkServer.sh start
+```
+
+**S3 存储和安装包准备：**
+
+*步骤1：创建S3 Bucket*
+```bash
+# 创建专用bucket
 aws s3 mb s3://your-dolphinscheduler-bucket --region us-east-2
 
-# 2. 上传DolphinScheduler安装包到S3（可选，用于加速部署）
-aws s3 cp apache-dolphinscheduler-3.2.0-bin.tar.gz \
-    s3://your-bucket/dolphinscheduler-3.2.0/ --region us-east-2
+# 配置bucket策略（可选，用于访问控制）
+aws s3api put-bucket-policy --bucket your-dolphinscheduler-bucket --policy file://bucket-policy.json
+```
 
-# 3. 创建IAM Role用于EC2访问S3
-# Role名称：AdminRole（或在config.yaml中指定）
+*步骤2：预下载DolphinScheduler安装包到S3（强烈推荐）*
+```bash
+# 在堡垒机上下载官方安装包
+cd /tmp
+wget https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
+
+# 验证下载完整性
+ls -lh apache-dolphinscheduler-3.2.0-bin.tar.gz
+# 应该约859MB
+
+# 上传到S3（加速后续部署）
+aws s3 cp apache-dolphinscheduler-3.2.0-bin.tar.gz \
+    s3://your-bucket/dolphinischeduler-3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz \
+    --region us-east-2
+
+# 验证上传成功
+aws s3 ls s3://your-bucket/dolphinischeduler-3.2.0/
+```
+
+*步骤3：创建IAM Role用于EC2访问S3*
+```bash
+# 创建信任策略文件
+cat > trust-policy.json << EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Service": "ec2.amazonaws.com"
+            },
+            "Action": "sts:AssumeRole"
+        }
+    ]
+}
+EOF
+
+# 创建权限策略文件
+cat > s3-access-policy.json << EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:DeleteObject",
+                "s3:ListBucket"
+            ],
+            "Resource": [
+                "arn:aws:s3:::your-dolphinscheduler-bucket",
+                "arn:aws:s3:::your-dolphinscheduler-bucket/*"
+            ]
+        }
+    ]
+}
+EOF
+
+# 创建IAM Role
+aws iam create-role --role-name DolphinSchedulerS3Role --assume-role-policy-document file://trust-policy.json
+aws iam put-role-policy --role-name DolphinSchedulerS3Role --policy-name S3Access --policy-document file://s3-access-policy.json
+
+# 创建实例配置文件
+aws iam create-instance-profile --instance-profile-name DolphinSchedulerS3Role
+aws iam add-role-to-instance-profile --instance-profile-name DolphinSchedulerS3Role --role-name DolphinSchedulerS3Role
+```
+
+*步骤4：配置S3 VPC端点（可选，提升性能）*
+```bash
+# 创建S3 VPC端点以提升访问速度
+aws ec2 create-vpc-endpoint \
+    --vpc-id vpc-xxxxxxxxx \
+    --service-name com.amazonaws.us-east-2.s3 \
+    --route-table-ids rtb-xxxxxxxxx
 ```
 
 ### 3. 安装部署工具
