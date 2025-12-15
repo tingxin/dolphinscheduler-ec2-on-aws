@@ -38,20 +38,14 @@ registry:
 # ===== 资源存储配置 (LOCAL) - 必填 =====
 # 用于 DolphinScheduler 资源中心存储上传的文件
 storage:
-  type: LOCAL
-  # LOCAL 存储配置 - 文件存储在各节点本地磁盘
-  # 注意：仅适合开发/测试环境，生产环境建议使用 HDFS 或 S3
-  local:
-    base_dir: /tmp/dolphinscheduler  # 本地存储路径
-  
-  # ===== HDFS 存储配置 - 备用（如需切换到 HDFS）=====
-  # 如果要使用 HDFS 作为资源存储，修改 type: HDFS 并取消下面的注释
-  # type: HDFS
-  # hdfs:
-  #   namenode_host: 172.31.6.163  # HDFS NameNode 主机地址（EMR 主节点）
-  #   namenode_port: 8020  # HDFS NameNode 端口（默认 8020）
-  #   upload_path: /dolphinscheduler  # HDFS 上的资源存储路径
-  #   user: hadoop  # HDFS 用户名（通常是 hadoop）
+  type: HDFS
+  # ===== HDFS 存储配置 =====
+  # 使用 EMR 集群的 HDFS 作为资源存储
+  hdfs:
+    namenode_host: 172.31.6.163  # HDFS NameNode 主机地址（EMR 主节点）
+    namenode_port: 8020  # HDFS NameNode 端口（默认 8020）
+    upload_path: /dolphinscheduler  # HDFS 上的资源存储路径
+    user: hadoop  # HDFS 用户名（通常是 hadoop）
   
   # ===== S3 存储配置 - 备用（如需使用 S3 作为资源存储）=====
   # 如果要使用 S3 作为资源存储，修改 type: S3 并取消下面的注释
@@ -63,6 +57,12 @@ storage:
   # access_key_id: ""
   # secret_access_key: ""
   # endpoint: https://s3.us-east-2.amazonaws.com
+
+# ===== EMR 集群配置 - 用于 HDFS 操作 =====
+emr:
+  master_host: 172.31.6.163  # EMR 主节点地址
+  master_user: hadoop  # EMR 主节点 SSH 用户名
+  master_key_file: /home/ec2-user/work/dolphinscheduler-ec2-on-aws/ec2-ohio.pem  # EMR 主节点 SSH 密钥文件路径（与 DolphinScheduler 节点使用同一密钥）
 
 # ===== 部署包分发配置 (S3) - 可选 =====
 # 用于加速 DolphinScheduler 部署包的下载和分发

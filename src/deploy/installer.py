@@ -380,6 +380,68 @@ def create_resource_directories(ssh, config):
     return True
 
 
+def create_hdfs_directories(ssh, config):
+    """
+    Create HDFS directories for DolphinScheduler resource storage
+    
+    Connects to EMR master node to create HDFS directories
+    
+    Args:
+        ssh: SSH connection (can be any node, used to get config)
+        config: Configuration dictionary
+    
+    Returns:
+        True if successful
+    """
+    logger.info("Creating HDFS directories for resource storage...")
+    
+    hdfs_config = config.get('storage', {}).get('hdfs', {})
+    hdfs_path = hdfs_config.get('upload_path', '/dolphinscheduler')
+    hdfs_user = hdfs_config.get('user', 'hadoop')
+    
+    # Get EMR master node info
+    emr_config = config.get('emr', {})
+    emr_master_host = emr_config.get('master_host', hdfs_config.get('namenode_host', 'localhost'))
+    emr_master_user = emr_config.get('master_user', 'hadoop')
+    emr_master_key = emr_config.get('master_key_file')
+    
+    logger.info(f"Connecting to EMR master node: {emr_master_host}")
+    
+    # Connect to EMR master node
+    try:
+        emr_ssh = connect_ssh(emr_master_host, emr_master_user, emr_master_key, config=config)
+    except Exception as e:
+        logger.error(f"Failed to connect to EMR master node {emr_master_host}: {e}")
+        raise Exception(f"Cannot connect to EMR master node: {e}")
+    
+    create_hdfs_dirs_script = f"""
+    # Create HDFS directories
+    hdfs dfs -mkdir -p {hdfs_path}
+    hdfs dfs -chmod 755 {hdfs_path}
+    
+    # Create subdirectories
+    hdfs dfs -mkdir -p {hdfs_path}/default
+    hdfs dfs -mkdir -p {hdfs_path}/default/resources
+    hdfs dfs -chmod 755 {hdfs_path}/default
+    hdfs dfs -chmod 755 {hdfs_path}/default/resources
+    
+    # Verify directories were created
+    echo "HDFS directories created:"
+    hdfs dfs -ls {hdfs_path}
+    hdfs dfs -ls {hdfs_path}/default
+    """
+    
+    try:
+        output = execute_remote_command(emr_ssh, create_hdfs_dirs_script, timeout=60)
+        logger.info(f"HDFS directories created successfully:\n{output}")
+        emr_ssh.close()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to create HDFS directories: {e}")
+        emr_ssh.close()
+        raise Exception(f"Failed to create HDFS directories: {e}")
+
+
 def prepare_package_on_bastion(ssh, config):
     """
     Download DolphinScheduler package on bastion host for distribution to nodes
@@ -584,7 +646,14 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
         elif storage_type == 'HDFS':
             logger.info("HDFS storage is configured, checking HDFS connectivity...")
             if check_hdfs_connectivity(ssh, config):
-                logger.info("HDFS is accessible, configuring HDFS storage...")
+                logger.info("HDFS is accessible, creating HDFS directories on EMR master...")
+                # Create HDFS directories on EMR master node before deployment
+                try:
+                    create_hdfs_directories(ssh, config)
+                    logger.info("✓ HDFS directories created successfully")
+                except Exception as e:
+                    logger.error(f"Failed to create HDFS directories: {e}")
+                    raise
                 configure_hdfs_storage(ssh, extract_dir, deploy_user, config)
             else:
                 logger.error("HDFS is not accessible from the node")
@@ -834,7 +903,13 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                 elif storage_type == 'HDFS':
                     logger.info(f"[{host}] HDFS storage is configured, checking HDFS connectivity...")
                     if check_hdfs_connectivity(node_ssh, config):
-                        logger.info(f"[{host}] HDFS is accessible, configuring HDFS storage...")
+                        logger.info(f"[{host}] HDFS is accessible, creating HDFS directories...")
+                        # Create HDFS directories (only once, but safe to call multiple times)
+                        try:
+                            create_hdfs_directories(node_ssh, config)
+                        except Exception as e:
+                            logger.warning(f"[{host}] HDFS directory creation failed (may already exist): {e}")
+                        logger.info(f"[{host}] Configuring HDFS storage...")
                         configure_hdfs_storage(node_ssh, config['deployment']['install_path'], deploy_user, config)
                     else:
                         logger.warning(f"[{host}] HDFS is not accessible, but continuing deployment")

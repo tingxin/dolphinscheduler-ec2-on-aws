@@ -434,6 +434,7 @@ resource.hdfs.fs.defaultFS=hdfs://{namenode_host}:{namenode_port}
 resource.hdfs.path.prefix={hdfs_path}
 resource.hdfs.username={hdfs_user}
 resource.hdfs.kerberos.authentication.enable=false
+resource.hdfs.resource.upload.path={hdfs_path}
 """
     else:
         # Default to LOCAL storage
