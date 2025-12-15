@@ -290,16 +290,19 @@ def upload_configuration_files(ssh, config, extract_dir):
     return True
 
 
-def upload_common_properties(ssh, config, extract_dir):
+def upload_common_properties(ssh, config, extract_dir, hdfs_address_override=None):
     """
     Generate and upload common.properties configuration file
     
     This file is critical for resource center functionality.
+    DolphinScheduler 3.2.0 reads common.properties from each component's conf directory,
+    so we need to copy it to all component directories.
     
     Args:
         ssh: SSH connection
         config: Configuration dictionary
         extract_dir: DolphinScheduler extracted directory
+        hdfs_address_override: Optional HDFS address to use (from core-site.xml)
     
     Returns:
         True if successful
@@ -307,7 +310,31 @@ def upload_common_properties(ssh, config, extract_dir):
     logger.info("Generating common.properties configuration...")
     deploy_user = config['deployment']['user']
     
+    # If HDFS address override is provided, update config temporarily
+    if hdfs_address_override:
+        storage_config = config.get('storage', {})
+        if storage_config.get('type', '').upper() == 'HDFS':
+            hdfs_config = storage_config.get('hdfs', {})
+            # Parse the override address to extract host
+            # Format: hdfs://hostname:port
+            if hdfs_address_override.startswith('hdfs://'):
+                addr = hdfs_address_override[7:]  # Remove hdfs://
+                if ':' in addr:
+                    host_part = addr.split(':')[0]
+                    # Update the config with the correct hostname
+                    hdfs_config['namenode_host'] = host_part
+                    logger.info(f"Using HDFS address from core-site.xml: {hdfs_address_override}")
+    
     properties_content = generate_common_properties_v320(config)
+    
+    # If we have an HDFS address override, replace the address in the generated content
+    if hdfs_address_override:
+        storage_config = config.get('storage', {})
+        if storage_config.get('type', '').upper() == 'HDFS':
+            hdfs_config = storage_config.get('hdfs', {})
+            old_addr = f"hdfs://{hdfs_config.get('namenode_host', 'localhost')}:{hdfs_config.get('namenode_port', 8020)}"
+            properties_content = properties_content.replace(old_addr, hdfs_address_override)
+            logger.info(f"Replaced HDFS address: {old_addr} -> {hdfs_address_override}")
     
     with tempfile.NamedTemporaryFile(mode='w', suffix='.properties', delete=False) as f:
         f.write(properties_content)
@@ -317,17 +344,27 @@ def upload_common_properties(ssh, config, extract_dir):
         temp_remote_properties = "/tmp/common.properties"
         upload_file(ssh, temp_properties, temp_remote_properties)
         
-        # Ensure conf directory exists
+        # Copy to root conf directory
         execute_remote_command(ssh, f"sudo mkdir -p {extract_dir}/conf")
+        execute_remote_command(ssh, f"sudo cp {temp_remote_properties} {extract_dir}/conf/common.properties")
+        execute_remote_command(ssh, f"sudo chown {deploy_user}:{deploy_user} {extract_dir}/conf/common.properties")
+        execute_remote_command(ssh, f"sudo chmod 644 {extract_dir}/conf/common.properties")
         
-        # Move to correct location
-        properties_path = f"{extract_dir}/conf/common.properties"
-        execute_remote_command(ssh, f"sudo mv {temp_remote_properties} {properties_path}")
-        execute_remote_command(ssh, f"sudo chown {deploy_user}:{deploy_user} {properties_path}")
-        execute_remote_command(ssh, f"sudo chmod 644 {properties_path}")
+        # CRITICAL: Copy to each component's conf directory
+        # DolphinScheduler 3.2.0 reads common.properties from component directories
+        components = ['api-server', 'master-server', 'worker-server', 'alert-server', 'tools']
+        for component in components:
+            component_conf = f"{extract_dir}/{component}/conf"
+            execute_remote_command(ssh, f"sudo mkdir -p {component_conf}")
+            execute_remote_command(ssh, f"sudo cp {temp_remote_properties} {component_conf}/common.properties")
+            execute_remote_command(ssh, f"sudo chown {deploy_user}:{deploy_user} {component_conf}/common.properties")
+            execute_remote_command(ssh, f"sudo chmod 644 {component_conf}/common.properties")
         
+        # Clean up temp file
+        execute_remote_command(ssh, f"rm -f {temp_remote_properties}")
         os.remove(temp_properties)
-        logger.info("✓ common.properties configured")
+        
+        logger.info("✓ common.properties configured in all component directories")
     except Exception as e:
         logger.error(f"Failed to upload common.properties: {e}")
         raise
@@ -608,12 +645,29 @@ def download_hadoop_config_from_emr(config):
         sftp.close()
         emr_ssh.close()
         
+        # Extract fs.defaultFS from core-site.xml
+        hdfs_address = None
+        try:
+            import xml.etree.ElementTree as ET
+            tree = ET.parse(core_site_local)
+            root = tree.getroot()
+            for prop in root.findall('property'):
+                name = prop.find('name')
+                value = prop.find('value')
+                if name is not None and name.text == 'fs.defaultFS':
+                    hdfs_address = value.text if value is not None else None
+                    logger.info(f"Extracted HDFS address from core-site.xml: {hdfs_address}")
+                    break
+        except Exception as e:
+            logger.warning(f"Could not parse core-site.xml to extract HDFS address: {e}")
+        
         logger.info(f"✓ Hadoop config files downloaded to {temp_dir}")
         
         return {
             'core_site': core_site_local,
             'hdfs_site': hdfs_site_local,
-            'temp_dir': temp_dir
+            'temp_dir': temp_dir,
+            'hdfs_address': hdfs_address
         }
         
     except Exception as e:
@@ -827,11 +881,25 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
         # Step 4: Upload configuration files
         upload_configuration_files(ssh, config, extract_dir)
         
+        # Step 4.5: Check storage type and download Hadoop config if HDFS
+        storage_type = config.get('storage', {}).get('type', 'LOCAL').upper()
+        hadoop_config_files = None
+        hdfs_address = None
+        
+        if storage_type == 'HDFS':
+            logger.info("HDFS storage is configured, downloading Hadoop configuration files...")
+            hadoop_config_files = download_hadoop_config_from_emr(config)
+            if hadoop_config_files:
+                hdfs_address = hadoop_config_files.get('hdfs_address')
+                logger.info(f"✓ Hadoop configuration files downloaded, HDFS address: {hdfs_address}")
+            else:
+                logger.warning("⚠ Failed to download Hadoop config files, HDFS may not work correctly")
+        
         # Step 5: Upload common.properties (critical for resource center)
-        upload_common_properties(ssh, config, extract_dir)
+        # Pass hdfs_address to use the correct address from core-site.xml
+        upload_common_properties(ssh, config, extract_dir, hdfs_address_override=hdfs_address)
         
         # Step 5.4: Check and configure storage based on type
-        storage_type = config.get('storage', {}).get('type', 'LOCAL').upper()
         if storage_type == 'S3':
             logger.info("S3 storage is configured, checking and installing S3 plugin...")
             if not check_s3_plugin_installed(ssh, extract_dir):
@@ -857,16 +925,6 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                 raise Exception("HDFS NameNode is not reachable. Please verify EMR cluster is running and network connectivity is correct.")
         else:
             logger.info("LOCAL storage is configured (default)")
-        
-        # Step 5.6: Download Hadoop configuration files if HDFS is configured
-        hadoop_config_files = None
-        if storage_type == 'HDFS':
-            logger.info("Downloading Hadoop configuration files from EMR master...")
-            hadoop_config_files = download_hadoop_config_from_emr(config)
-            if hadoop_config_files:
-                logger.info("✓ Hadoop configuration files downloaded successfully")
-            else:
-                logger.warning("⚠ Failed to download Hadoop config files, HDFS may not work correctly")
         
         # Step 6: Install MySQL JDBC driver
         install_mysql_jdbc_driver(ssh, extract_dir, deploy_user)
@@ -1094,8 +1152,10 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                 upload_configuration_files(node_ssh, config, config['deployment']['install_path'])
                 
                 # Step 6: Upload common.properties (critical for resource center)
-                logger.info(f"[{host}] Uploading common.properties...")
-                upload_common_properties(node_ssh, config, config['deployment']['install_path'])
+                # Use hdfs_address from hadoop_config_files if available
+                hdfs_addr = hadoop_config_files.get('hdfs_address') if hadoop_config_files else None
+                logger.info(f"[{host}] Uploading common.properties (HDFS address: {hdfs_addr})...")
+                upload_common_properties(node_ssh, config, config['deployment']['install_path'], hdfs_address_override=hdfs_addr)
                 
                 # Step 6.5: Check and configure storage based on type
                 storage_type = config.get('storage', {}).get('type', 'LOCAL').upper()

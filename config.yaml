@@ -110,14 +110,14 @@ cluster:
 
   # Worker 节点配置
   worker:
-    count: 3  # 必填：节点数量（根据任务量调整）
+    count: 2  # 必填：节点数量（根据任务量调整）
     instance_type: m7i.xlarge  # 必填：实例类型
     # 节点列表（创建集群时自动生成，无需手动填写）
     nodes: []
 
   # API 节点配置
   api:
-    count: 2  # 必填：节点数量（建议 2 个以上）
+    count: 1  # 必填：节点数量（建议 2 个以上）
     instance_type: m7i.large  # 必填：实例类型
     # 节点列表（创建集群时自动生成，无需手动填写）
     nodes: []
@@ -145,7 +145,7 @@ deployment:
 # ===== EC2 实例详细配置（可选）=====
 ec2_advanced:
   master:
-    root_volume_size: 200  # 根卷大小（GB）
+    root_volume_size: 100  # 根卷大小（GB）
     root_volume_type: gp3  # 根卷类型
     tags:
       Name: dolphinscheduler-master
@@ -153,7 +153,7 @@ ec2_advanced:
       Component: master
 
   worker:
-    root_volume_size: 200
+    root_volume_size: 100
     root_volume_type: gp3
     tags:
       Name: dolphinscheduler-worker
@@ -161,7 +161,7 @@ ec2_advanced:
       Component: worker
 
   api:
-    root_volume_size: 200
+    root_volume_size: 60
     root_volume_type: gp3
     tags:
       Name: dolphinscheduler-api
@@ -169,7 +169,7 @@ ec2_advanced:
       Component: api
 
   alert:
-    root_volume_size: 200  # 最小 30GB（AMI 快照要求）
+    root_volume_size: 100  # 最小 30GB（AMI 快照要求）
     root_volume_type: gp3
     tags:
       Name: dolphinscheduler-alert
