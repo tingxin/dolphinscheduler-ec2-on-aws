@@ -118,42 +118,73 @@ python cli.py --help
 ### 2. AWS 基础设施准备
 
 **VPC 和网络配置：**
+
+根据config.yaml配置，需要使用以下网络资源：
+
 ```bash
-# 1. 创建或使用现有VPC
-# 2. 确保有至少2个不同可用区的子网
-# 3. 子网需要有互联网访问（公有子网或配置NAT网关的私有子网）
+# 当前配置要求：
+# VPC: vpc-0c9a0d81e8f5ca012
+# 区域: us-east-2
+# 子网配置：
+# - subnet-027700489b00e3c22 (us-east-2a)
+# - subnet-07589363bd3782beb (us-east-2b)  
+# - subnet-0f0fee34cbe94fe38 (us-east-2c)
+
+# 验证VPC和子网存在
+aws ec2 describe-vpcs --vpc-ids vpc-0c9a0d81e8f5ca012 --region us-east-2
+aws ec2 describe-subnets --subnet-ids subnet-027700489b00e3c22 subnet-07589363bd3782beb subnet-0f0fee34cbe94fe38 --region us-east-2
+
+# 确保子网有互联网访问（通过IGW或NAT网关）
+aws ec2 describe-route-tables --filters "Name=association.subnet-id,Values=subnet-027700489b00e3c22" --region us-east-2
 ```
 
 **安全组配置：**
-创建安全组并配置以下规则：
+
+根据config.yaml配置，需要配置安全组 `sg-0b4d077af6fa8c4ee`：
+
 ```bash
-# DolphinScheduler 安全组规则
+# 验证安全组存在
+aws ec2 describe-security-groups --group-ids sg-0b4d077af6fa8c4ee --region us-east-2
+
+# 配置安全组规则（如果需要）
 # 入站规则：
-- SSH (22): 来源为堡垒机IP或VPC CIDR
-- HTTP (80): 来源为0.0.0.0/0（如果需要公网访问）
-- DolphinScheduler API (12345): 来源为VPC CIDR
-- DolphinScheduler Master (5678): 来源为VPC CIDR  
-- DolphinScheduler Worker (1234): 来源为VPC CIDR
-- DolphinScheduler Alert (50052): 来源为VPC CIDR
-- MySQL (3306): 来源为VPC CIDR（用于连接RDS）
-- Zookeeper (2181): 来源为VPC CIDR
+- SSH (22): 来源为堡垒机IP或VPC CIDR (172.31.0.0/16)
+- HTTP (80): 来源为0.0.0.0/0（如果启用ALB公网访问）
+- DolphinScheduler API (12345): 来源为VPC CIDR (172.31.0.0/16)
+- DolphinScheduler Master (5678): 来源为VPC CIDR (172.31.0.0/16)
+- DolphinScheduler Worker (1234): 来源为VPC CIDR (172.31.0.0/16)
+- DolphinScheduler Alert (50052): 来源为VPC CIDR (172.31.0.0/16)
+- MySQL (3306): 来源为VPC CIDR (172.31.0.0/16)
+- Zookeeper (2181): 来源为VPC CIDR (172.31.0.0/16)
 
 # 出站规则：
 - All traffic (0-65535): 目标为0.0.0.0/0
+
+# 使用AWS CLI添加规则示例：
+aws ec2 authorize-security-group-ingress \
+    --group-id sg-0b4d077af6fa8c4ee \
+    --protocol tcp \
+    --port 12345 \
+    --cidr 172.31.0.0/16 \
+    --region us-east-2
 ```
 
 **RDS MySQL 数据库准备：**
 
+根据config.yaml配置，需要准备以下RDS MySQL实例：
+
 *步骤1：创建RDS实例*
 ```bash
 # 在AWS控制台创建RDS MySQL 8.0实例
+# 配置要求（基于config.yaml）：
 # - 引擎版本: MySQL 8.0.35 或更高
 # - 实例类型: db.t3.medium 或更高
-# - 存储: 100GB gp3（可根据需要调整）
+# - 存储: 100GB gp3
 # - 多可用区: 建议启用（生产环境）
-# - VPC: 选择与DolphinScheduler相同的VPC
+# - VPC: vpc-0c9a0d81e8f5ca012
+# - 区域: us-east-2
 # - 子网组: 选择数据库子网组
-# - 安全组: 允许来自DolphinScheduler安全组的3306端口访问
+# - 安全组: 允许来自sg-0b4d077af6fa8c4ee的3306端口访问
 # - 数据库名称: 留空（稍后手动创建）
 # - 主用户名: root
 # - 主密码: 设置强密码
@@ -161,13 +192,13 @@ python cli.py --help
 
 *步骤2：配置数据库和用户权限*
 ```bash
-# 从堡垒机连接到RDS
-mysql -h your-rds-endpoint.cbore8wpy3mc.us-east-2.rds.amazonaws.com -u root -p
+# 从堡垒机连接到RDS（使用config.yaml中的实际端点）
+mysql -h tx-db.cbore8wpy3mc.us-east-2.rds.amazonaws.com -u root -p
 
-# 创建DolphinScheduler数据库
+# 创建DolphinScheduler数据库（与config.yaml中database.database一致）
 CREATE DATABASE dolphinscheduler DEFAULT CHARACTER SET utf8mb4 DEFAULT COLLATE utf8mb4_unicode_ci;
 
-# 创建专用用户并授权
+# 创建专用用户并授权（与config.yaml中的用户名密码一致）
 CREATE USER 'dsadmin'@'%' IDENTIFIED BY 'ds123456';
 GRANT ALL PRIVILEGES ON dolphinscheduler.* TO 'dsadmin'@'%';
 
@@ -182,102 +213,170 @@ FLUSH PRIVILEGES;
 # 验证用户权限
 SHOW GRANTS FOR 'dsadmin'@'%';
 
-# 测试连接
-mysql -h your-rds-endpoint -u dsadmin -p dolphinscheduler
+# 测试连接（使用config.yaml中的配置）
+mysql -h tx-db.cbore8wpy3mc.us-east-2.rds.amazonaws.com -u dsadmin -p dolphinscheduler
 SHOW DATABASES;
 USE dolphinscheduler;
 SHOW TABLES;  # 应该为空（初始状态）
 ```
 
-*步骤3：优化MySQL配置（可选）*
-```sql
--- 在RDS参数组中设置以下参数（推荐值）
--- max_connections = 1000
--- innodb_buffer_pool_size = 70% of available memory
--- innodb_log_file_size = 256M
--- query_cache_size = 0 (MySQL 8.0中已废弃)
--- sql_mode = STRICT_TRANS_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO
+*步骤3：验证连接参数*
+```bash
+# 确保RDS配置与config.yaml一致：
+# database.host: tx-db.cbore8wpy3mc.us-east-2.rds.amazonaws.com
+# database.port: 3306
+# database.username: dsadmin
+# database.password: ds123456
+# database.database: dolphinscheduler
+# database.params: useUnicode=true&characterEncoding=UTF-8&useSSL=false
 ```
 
 **EMR Zookeeper 集群准备：**
 
-*方式1：使用Amazon EMR（推荐）*
+使用Amazon EMR部署Zookeeper集群（推荐方式）：
+
+*步骤1：创建EMR Zookeeper集群*
 ```bash
-# 1. 在AWS控制台创建EMR集群
+# 在AWS控制台创建EMR集群
+# 配置要求：
 # - EMR版本: 6.15.0 或更高
-# - 应用程序: 选择Zookeeper
+# - 应用程序: 选择 Zookeeper
 # - 实例类型: 
-#   - Master: m5.xlarge
-#   - Core: m5.large (至少3个节点，奇数个)
-# - VPC: 选择与DolphinScheduler相同的VPC
-# - 子网: 选择私有子网
-# - 安全组: 允许来自DolphinScheduler安全组的2181端口访问
+#   - Master: m5.xlarge (1个)
+#   - Core: m5.large (3个节点，奇数个，用于Zookeeper集群)
+# - 网络配置（重要）:
+#   - VPC: vpc-0c9a0d81e8f5ca012 (与DolphinScheduler相同VPC)
+#   - 区域: us-east-2
+#   - 子网: 选择私有子网，建议跨可用区部署
+#     - us-east-2a: subnet-027700489b00e3c22
+#     - us-east-2b: subnet-07589363bd3782beb
+#     - us-east-2c: subnet-0f0fee34cbe94fe38
+# - 安全组配置（关键）:
+#   - 创建EMR专用安全组，允许来自sg-0b4d077af6fa8c4ee的2181端口访问
+#   - 确保EMR Master和Core节点之间的2888、3888端口互通
+```
 
-# 2. 获取Zookeeper连接信息
-aws emr describe-cluster --cluster-id j-xxxxxxxxx
-# 记录Master节点的私有IP地址
+*步骤2：配置EMR安全组（网络互通关键）*
+```bash
+# 1. 获取EMR集群的安全组ID
+aws emr describe-cluster --cluster-id j-xxxxxxxxx --region us-east-2
 
-# 3. 测试Zookeeper连接
-telnet master-private-ip 2181
+# 2. 配置EMR Master安全组入站规则
+# 允许DolphinScheduler节点访问Zookeeper
+aws ec2 authorize-security-group-ingress \
+    --group-id sg-emr-master-xxxxxxxxx \
+    --protocol tcp \
+    --port 2181 \
+    --source-group sg-0b4d077af6fa8c4ee \
+    --region us-east-2
+
+# 3. 确保EMR内部通信（Zookeeper集群间通信）
+aws ec2 authorize-security-group-ingress \
+    --group-id sg-emr-master-xxxxxxxxx \
+    --protocol tcp \
+    --port 2888 \
+    --source-group sg-emr-master-xxxxxxxxx \
+    --region us-east-2
+
+aws ec2 authorize-security-group-ingress \
+    --group-id sg-emr-master-xxxxxxxxx \
+    --protocol tcp \
+    --port 3888 \
+    --source-group sg-emr-master-xxxxxxxxx \
+    --region us-east-2
+```
+
+*步骤3：获取Zookeeper连接信息*
+```bash
+# 1. 获取EMR Master节点IP
+aws emr describe-cluster --cluster-id j-xxxxxxxxx --region us-east-2
+aws emr list-instances --cluster-id j-xxxxxxxxx --instance-group-types MASTER --region us-east-2
+
+# 2. 记录Master节点的私有IP地址
+# 例如：172.31.6.163
+
+# 3. 更新config.yaml中的Zookeeper配置
+registry:
+  servers:
+    - 172.31.6.163:2181  # 使用EMR Master节点的私有IP
+```
+
+*步骤4：验证网络连通性（重要）*
+```bash
+# 从堡垒机测试Zookeeper连接
+telnet 172.31.6.163 2181
 # 输入: ruok
 # 应该返回: imok
+
+# 使用Zookeeper客户端测试
+echo "ls /" | nc 172.31.6.163 2181
+
+# 从DolphinScheduler节点测试连接（部署后）
+ssh -i ec2-ohio.pem ec2-user@dolphinscheduler-node-ip
+telnet 172.31.6.163 2181
 ```
 
-*方式2：使用Amazon MSK（Kafka自带Zookeeper）*
+*网络互通要求总结：*
 ```bash
-# 1. 创建MSK集群
-aws kafka create-cluster \
-    --cluster-name dolphinscheduler-zk \
-    --broker-node-group-info file://broker-info.json \
-    --kafka-version "2.8.1"
+# 确保以下网络连通性：
+# 1. DolphinScheduler节点 -> EMR Zookeeper (端口2181)
+# 2. EMR集群内部通信 (端口2888, 3888)
+# 3. 所有节点在同一VPC内 (vpc-0c9a0d81e8f5ca012)
+# 4. 安全组规则正确配置
 
-# 2. 获取Zookeeper连接字符串
-aws kafka describe-cluster --cluster-arn arn:aws:kafka:region:account:cluster/name
+# 网络架构：
+# VPC: vpc-0c9a0d81e8f5ca012
+# ├── DolphinScheduler节点 (sg-0b4d077af6fa8c4ee)
+# └── EMR Zookeeper集群 (EMR安全组)
+#     └── 允许来自sg-0b4d077af6fa8c4ee的2181端口访问
 ```
 
-*方式3：自建Zookeeper集群*
+*故障排除：*
 ```bash
-# 在3个EC2实例上安装Zookeeper
-# 实例配置: t3.medium, Amazon Linux 2023
-# 确保跨不同可用区部署
+# 如果连接失败，检查：
+# 1. 安全组规则是否正确
+aws ec2 describe-security-groups --group-ids sg-emr-master-xxxxxxxxx --region us-east-2
 
-# 每个节点执行：
-sudo yum install -y java-11-amazon-corretto
-wget https://downloads.apache.org/zookeeper/zookeeper-3.8.3/apache-zookeeper-3.8.3-bin.tar.gz
-tar -xzf apache-zookeeper-3.8.3-bin.tar.gz
-sudo mv apache-zookeeper-3.8.3-bin /opt/zookeeper
+# 2. EMR集群状态
+aws emr describe-cluster --cluster-id j-xxxxxxxxx --region us-east-2
 
-# 配置zoo.cfg（每个节点）
-sudo tee /opt/zookeeper/conf/zoo.cfg << EOF
-tickTime=2000
-dataDir=/var/lib/zookeeper
-clientPort=2181
-initLimit=5
-syncLimit=2
-server.1=zk1-private-ip:2888:3888
-server.2=zk2-private-ip:2888:3888
-server.3=zk3-private-ip:2888:3888
-EOF
+# 3. 网络路由
+aws ec2 describe-route-tables --filters "Name=vpc-id,Values=vpc-0c9a0d81e8f5ca012" --region us-east-2
 
-# 设置节点ID（每个节点不同）
-sudo mkdir -p /var/lib/zookeeper
-echo "1" | sudo tee /var/lib/zookeeper/myid  # 节点1
-# echo "2" | sudo tee /var/lib/zookeeper/myid  # 节点2
-# echo "3" | sudo tee /var/lib/zookeeper/myid  # 节点3
-
-# 启动Zookeeper
-sudo /opt/zookeeper/bin/zkServer.sh start
+# 4. Zookeeper服务状态（SSH到EMR Master节点）
+sudo /usr/lib/zookeeper/bin/zkServer.sh status
 ```
 
 **S3 存储和安装包准备：**
 
-*步骤1：创建S3 Bucket*
-```bash
-# 创建专用bucket
-aws s3 mb s3://your-dolphinscheduler-bucket --region us-east-2
+根据config.yaml配置，需要准备以下S3资源：
 
-# 配置bucket策略（可选，用于访问控制）
-aws s3api put-bucket-policy --bucket your-dolphinscheduler-bucket --policy file://bucket-policy.json
+*当前配置要求：*
+```yaml
+# config.yaml中的S3配置
+storage:
+  type: S3
+  bucket: tx-mageline-eks  # 使用此bucket
+  region: us-east-2
+  upload_path: /dolphinscheduler
+  use_iam_role: true
+
+# S3预上传包配置
+advanced:
+  s3_package:
+    enabled: true
+    bucket: tx-mageline-eks
+    key: dolphinischeduler-3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
+    region: us-east-2
+```
+
+*步骤1：验证S3 Bucket*
+```bash
+# 验证bucket存在（应该已存在）
+aws s3 ls s3://tx-mageline-eks --region us-east-2
+
+# 如果bucket不存在，创建它
+aws s3 mb s3://tx-mageline-eks --region us-east-2
 ```
 
 *步骤2：预下载DolphinScheduler安装包到S3（强烈推荐）*
@@ -290,18 +389,25 @@ wget https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinschedu
 ls -lh apache-dolphinscheduler-3.2.0-bin.tar.gz
 # 应该约859MB
 
-# 上传到S3（加速后续部署）
+# 上传到S3（按config.yaml中的路径）
 aws s3 cp apache-dolphinscheduler-3.2.0-bin.tar.gz \
-    s3://your-bucket/dolphinischeduler-3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz \
+    s3://tx-mageline-eks/dolphinischeduler-3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz \
     --region us-east-2
 
 # 验证上传成功
-aws s3 ls s3://your-bucket/dolphinischeduler-3.2.0/
+aws s3 ls s3://tx-mageline-eks/dolphinischeduler-3.2.0/
 ```
 
-*步骤3：创建IAM Role用于EC2访问S3*
+*步骤3：验证IAM Role配置*
 ```bash
-# 创建信任策略文件
+# 验证AdminRole存在（config.yaml中指定的iam_instance_profile）
+aws iam get-role --role-name AdminRole
+
+# 验证Role有S3访问权限
+aws iam list-attached-role-policies --role-name AdminRole
+aws iam list-role-policies --role-name AdminRole
+
+# 如果Role不存在，创建它
 cat > trust-policy.json << EOF
 {
     "Version": "2012-10-17",
@@ -317,7 +423,7 @@ cat > trust-policy.json << EOF
 }
 EOF
 
-# 创建权限策略文件
+# 创建权限策略（针对tx-mageline-eks bucket）
 cat > s3-access-policy.json << EOF
 {
     "Version": "2012-10-17",
@@ -331,8 +437,8 @@ cat > s3-access-policy.json << EOF
                 "s3:ListBucket"
             ],
             "Resource": [
-                "arn:aws:s3:::your-dolphinscheduler-bucket",
-                "arn:aws:s3:::your-dolphinscheduler-bucket/*"
+                "arn:aws:s3:::tx-mageline-eks",
+                "arn:aws:s3:::tx-mageline-eks/*"
             ]
         }
     ]
@@ -340,21 +446,21 @@ cat > s3-access-policy.json << EOF
 EOF
 
 # 创建IAM Role
-aws iam create-role --role-name DolphinSchedulerS3Role --assume-role-policy-document file://trust-policy.json
-aws iam put-role-policy --role-name DolphinSchedulerS3Role --policy-name S3Access --policy-document file://s3-access-policy.json
+aws iam create-role --role-name AdminRole --assume-role-policy-document file://trust-policy.json
+aws iam put-role-policy --role-name AdminRole --policy-name S3Access --policy-document file://s3-access-policy.json
 
 # 创建实例配置文件
-aws iam create-instance-profile --instance-profile-name DolphinSchedulerS3Role
-aws iam add-role-to-instance-profile --instance-profile-name DolphinSchedulerS3Role --role-name DolphinSchedulerS3Role
+aws iam create-instance-profile --instance-profile-name AdminRole
+aws iam add-role-to-instance-profile --instance-profile-name AdminRole --role-name AdminRole
 ```
 
 *步骤4：配置S3 VPC端点（可选，提升性能）*
 ```bash
-# 创建S3 VPC端点以提升访问速度
+# 为vpc-0c9a0d81e8f5ca012创建S3 VPC端点
 aws ec2 create-vpc-endpoint \
-    --vpc-id vpc-xxxxxxxxx \
+    --vpc-id vpc-0c9a0d81e8f5ca012 \
     --service-name com.amazonaws.us-east-2.s3 \
-    --route-table-ids rtb-xxxxxxxxx
+    --region us-east-2
 ```
 
 ### 3. 安装部署工具
@@ -381,61 +487,135 @@ python cli.py --help
 # 1. 复制配置模板
 cp config.example.yaml config.yaml
 
-# 2. 编辑配置文件
+# 2. 编辑配置文件，填入实际的资源信息
 vim config.yaml
 ```
 
-**必填配置项：**
+**配置文件示例（基于实际config.yaml）：**
 ```yaml
-# 数据库配置
+# ================================================================================
+# 【项目信息】用于资源标签管理
+# ================================================================================
+project:
+  name: dolphinscheduler-prod
+
+# ================================================================================
+# 【必填配置】以下配置必须填写
+# ================================================================================
 database:
-  host: your-rds-endpoint.rds.amazonaws.com
+  type: mysql
+  host: tx-db.cbore8wpy3mc.us-east-2.rds.amazonaws.com  # 你的RDS端点
+  port: 3306
   username: dsadmin
   password: ds123456
   database: dolphinscheduler
+  params: useUnicode=true&characterEncoding=UTF-8&useSSL=false
 
-# Zookeeper配置  
+# ===== 注册中心配置 (Zookeeper) - 必填 =====
 registry:
+  type: zookeeper
   servers:
-    - your-zk-host:2181
+    - 172.31.6.163:2181  # 你的Zookeeper服务器IP
+  namespace: dolphinscheduler
+  connection_timeout: 30000
+  session_timeout: 60000
+  retry:
+    base_sleep_time: 1000
+    max_sleep_time: 3000
+    max_retries: 5
 
-# S3存储配置
+# ===== 资源存储配置 (S3) - 必填 =====
 storage:
-  bucket: your-dolphinscheduler-bucket
+  type: S3
+  bucket: tx-mageline-eks  # 你的S3 bucket名称
   region: us-east-2
+  upload_path: /dolphinscheduler
+  use_iam_role: true
+  endpoint: https://s3.us-east-2.amazonaws.com
 
-# AWS基础配置
+# ===== AWS 基础配置 - 必填 =====
 aws:
   region: us-east-2
-  vpc_id: vpc-xxxxxxxxx
+  vpc_id: vpc-0c9a0d81e8f5ca012  # 你的VPC ID
   subnets:
-    - subnet_id: subnet-xxxxxxxxx
+    - subnet_id: subnet-027700489b00e3c22
       availability_zone: us-east-2a
-    - subnet_id: subnet-yyyyyyyyy  
+    - subnet_id: subnet-07589363bd3782beb
       availability_zone: us-east-2b
-  key_name: your-ec2-keypair-name
+    - subnet_id: subnet-0f0fee34cbe94fe38
+      availability_zone: us-east-2c
+  key_name: ec2-ohio  # 你的EC2 Key Pair名称
   iam_instance_profile: AdminRole
   security_groups:
-    master: sg-xxxxxxxxx
-    worker: sg-xxxxxxxxx
-    api: sg-xxxxxxxxx
-    alert: sg-xxxxxxxxx
+    master: sg-0b4d077af6fa8c4ee
+    worker: sg-0b4d077af6fa8c4ee
+    api: sg-0b4d077af6fa8c4ee
+    alert: sg-0b4d077af6fa8c4ee
 
-# 集群配置
+# ===== 集群节点配置 - 必填 =====
 cluster:
   master:
     count: 2
     instance_type: m7i.xlarge
+    nodes: []
   worker:
     count: 3
     instance_type: m7i.xlarge
+    nodes: []
   api:
     count: 2
     instance_type: m7i.large
+    nodes: []
   alert:
     count: 1
     instance_type: m7i.large
+    nodes: []
+
+# ===== 部署配置 - 必填 =====
+deployment:
+  user: dolphinscheduler
+  install_path: /opt/dolphinscheduler
+  version: 3.2.0
+  skip_system_update: true
+  parallel_init_workers: 10
+  download_on_remote: true
+
+# ===== EC2 实例详细配置（可选）=====
+ec2_advanced:
+  master:
+    root_volume_size: 200  # 200GB磁盘
+    root_volume_type: gp3
+  worker:
+    root_volume_size: 200
+    root_volume_type: gp3
+  api:
+    root_volume_size: 200
+    root_volume_type: gp3
+  alert:
+    root_volume_size: 200
+    root_volume_type: gp3
+
+# ===== 其他配置（可选）=====
+advanced:
+  # S3 预上传包（最快，推荐）
+  s3_package:
+    enabled: true
+    bucket: tx-mageline-eks
+    key: dolphinischeduler-3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
+    region: us-east-2
+  
+  # 备用下载地址
+  download_url: https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
 ```
+
+**配置检查清单：**
+- ✅ RDS端点地址正确
+- ✅ Zookeeper服务器IP可访问
+- ✅ S3 bucket存在且有权限
+- ✅ VPC和子网ID正确
+- ✅ 安全组ID存在
+- ✅ EC2 Key Pair存在
+- ✅ IAM Role (AdminRole) 配置正确
 
 ### 5. 环境变量配置（可选）
 
