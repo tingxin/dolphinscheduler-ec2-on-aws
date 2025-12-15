@@ -284,9 +284,6 @@ def prepare_package_on_bastion(ssh, config):
         Path to package on bastion if successful, None if failed
     """
     try:
-        download_url = config.get('advanced', {}).get('download_url', 
-            'https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz')
-        
         package_path = "/tmp/apache-dolphinscheduler-3.2.0-bin.tar.gz"
         
         # Check if package already exists
@@ -305,8 +302,46 @@ def prepare_package_on_bastion(ssh, config):
             else:
                 logger.info(f"Package exists but size is wrong ({file_size} bytes), re-downloading...")
         
-        # Download package on bastion using wget (much faster)
-        logger.info("Downloading DolphinScheduler package on bastion host...")
+        # Priority 1: Try S3 download first (fastest)
+        s3_config = config.get('advanced', {}).get('s3_package', {})
+        if s3_config.get('enabled', False):
+            logger.info("Downloading DolphinScheduler package from S3 on bastion host...")
+            s3_bucket = s3_config.get('bucket')
+            s3_key = s3_config.get('key')
+            s3_region = s3_config.get('region', config.get('aws', {}).get('region', 'us-east-2'))
+            
+            s3_download_cmd = f"""
+            set -e
+            echo "Starting S3 download from s3://{s3_bucket}/{s3_key}..."
+            
+            # Remove any partial downloads
+            rm -f {package_path}*
+            
+            # Download from S3
+            aws s3 cp s3://{s3_bucket}/{s3_key} {package_path} --region {s3_region}
+            
+            # Verify download
+            if [ ! -f {package_path} ] || [ ! -s {package_path} ]; then
+                echo "✗ S3 download verification failed"
+                exit 1
+            fi
+            
+            file_size=$(stat -c%s {package_path})
+            echo "✓ S3 download completed, size: ${{file_size}} bytes ($((${{file_size}} / 1024 / 1024))MB)"
+            """
+            
+            try:
+                execute_remote_command(ssh, s3_download_cmd, timeout=300)
+                logger.info(f"✓ Package downloaded from S3 successfully on bastion: {package_path}")
+                return package_path
+            except Exception as e:
+                logger.warning(f"S3 download failed: {e}, falling back to internet download")
+        
+        # Priority 2: Download from internet (fallback)
+        download_url = config.get('advanced', {}).get('download_url', 
+            'https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz')
+        
+        logger.info("Downloading DolphinScheduler package from internet on bastion host...")
         download_cmd = f"""
         set -e
         echo "Starting download from {download_url}..."
@@ -450,9 +485,43 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                     copy_cmd = f"sudo -u {deploy_user} cp -r {extract_dir}/* {config['deployment']['install_path']}/"
                     execute_remote_command(node_ssh, copy_cmd, timeout=120)
                 else:
-                    # Try to get package from bastion first, then fall back to internet download
-                    if bastion_package_path:
-                        # Option 1: Copy from bastion host (fastest)
+                    # Priority 1: Download from S3 (fastest if pre-uploaded)
+                    s3_config = config.get('advanced', {}).get('s3_package', {})
+                    if s3_config.get('enabled', False):
+                        logger.info(f"[{host}] Downloading DolphinScheduler from S3...")
+                        
+                        # Step 2a: Create temp directory
+                        execute_remote_command(node_ssh, """
+                        TEMP_DIR="/tmp/ds_download_$(date +%s)"
+                        mkdir -p $TEMP_DIR
+                        cd $TEMP_DIR
+                        echo "Created temp directory: $TEMP_DIR"
+                        """, timeout=30)
+                        
+                        # Step 2b: Download from S3
+                        s3_bucket = s3_config.get('bucket')
+                        s3_key = s3_config.get('key')
+                        s3_region = s3_config.get('region', config.get('aws', {}).get('region', 'us-east-2'))
+                        
+                        download_cmd = f"""
+                        cd /tmp/ds_download_*
+                        echo "Downloading from S3: s3://{s3_bucket}/{s3_key}..."
+                        
+                        # Download from S3 using AWS CLI
+                        aws s3 cp s3://{s3_bucket}/{s3_key} apache-dolphinscheduler-3.2.0-bin.tar.gz --region {s3_region}
+                        
+                        # Verify download
+                        if [ ! -f apache-dolphinscheduler-3.2.0-bin.tar.gz ] || [ ! -s apache-dolphinscheduler-3.2.0-bin.tar.gz ]; then
+                            echo "✗ S3 download verification failed"
+                            exit 1
+                        fi
+                        
+                        echo "✓ Package downloaded from S3, size: $(du -h apache-dolphinscheduler-3.2.0-bin.tar.gz | cut -f1)"
+                        """
+                        execute_remote_command(node_ssh, download_cmd, timeout=300)
+                        
+                    # Priority 2: Copy from bastion host
+                    elif bastion_package_path:
                         logger.info(f"[{host}] Copying DolphinScheduler from bastion host...")
                         
                         # Step 2a: Create temp directory
@@ -482,6 +551,7 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                         """
                         execute_remote_command(node_ssh, copy_cmd, timeout=300)
                         
+                    # Priority 3: Download from internet (fallback)
                     else:
                         # Option 2: Download from internet (fallback)
                         logger.info(f"[{host}] Downloading DolphinScheduler from internet...")

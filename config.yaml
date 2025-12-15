@@ -224,7 +224,15 @@ jvm:
 
 # ===== 其他配置（可选）=====
 advanced:
-  # 下载地址 - DolphinScheduler 3.2.0
+  # 包分发配置 - 优先级从高到低
+  # S3 预上传包（最快，推荐）
+  s3_package:
+    enabled: true
+    bucket: tx-mageline-eks
+    key: dolphinischeduler-3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
+    region: us-east-2
+  
+  # 下载地址 - DolphinScheduler 3.2.0（备用）
   # Apache 官方归档（推荐）
   download_url: https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
   # 清华镜像（备选，中国访问快）
