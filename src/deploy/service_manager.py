@@ -11,13 +11,13 @@ logger = setup_logger(__name__)
 
 def apply_hdfs_config_to_api_servers(config, username='ec2-user', key_file=None):
     """
-    Apply HDFS configuration to API servers after initial startup
+    Apply HDFS configuration to API servers and Worker nodes after initial startup
     
     This function:
     1. Downloads Hadoop config files from HDFS cluster master
-    2. Copies them to each API server
+    2. Copies them to each API server and Worker node
     3. Patches common.properties with correct HDFS settings
-    4. Restarts API servers
+    4. Restarts API servers and Worker nodes
     
     Args:
         config: Configuration dictionary
@@ -27,7 +27,7 @@ def apply_hdfs_config_to_api_servers(config, username='ec2-user', key_file=None)
     Returns:
         True if successful
     """
-    logger.info("Configuring HDFS storage on API servers...")
+    logger.info("Configuring HDFS storage on API servers and Worker nodes...")
     
     install_path = config['deployment']['install_path']
     deploy_user = config['deployment']['user']
@@ -101,6 +101,57 @@ def apply_hdfs_config_to_api_servers(config, username='ec2-user', key_file=None)
         finally:
             ssh.close()
     
+    # Apply to each Worker node
+    logger.info("Configuring HDFS on Worker nodes...")
+    for i, node in enumerate(config['cluster']['worker']['nodes']):
+        host = node['host']
+        logger.info(f"Configuring HDFS on Worker {i+1}: {host}")
+        
+        ssh = connect_ssh(host, username, key_file, config=config)
+        try:
+            # Copy Hadoop config files if available
+            if hadoop_config_files:
+                try:
+                    setup_hadoop_config_on_node(ssh, config, host, hadoop_config_files)
+                except Exception as e:
+                    logger.warning(f"Failed to copy Hadoop config to {host}: {e}")
+            
+            # Patch worker-server common.properties with HDFS settings
+            conf_file = f"{install_path}/worker-server/conf/common.properties"
+            
+            patch_script = f"""
+            # Patch HDFS configuration for worker
+            sudo sed -i 's|resource.storage.type=.*|resource.storage.type=HDFS|g' {conf_file}
+            sudo sed -i 's|resource.storage.upload.base.path=.*|resource.storage.upload.base.path={hdfs_path}|g' {conf_file}
+            sudo sed -i 's|resource.hdfs.root.user=.*|resource.hdfs.root.user={hdfs_user}|g' {conf_file}
+            sudo sed -i 's|resource.hdfs.fs.defaultFS=.*|resource.hdfs.fs.defaultFS={hdfs_address}|g' {conf_file}
+            
+            # Verify changes
+            echo "=== Worker HDFS configuration ==="
+            grep -E "resource.storage.type|resource.hdfs.fs.defaultFS|resource.hdfs.root.user" {conf_file}
+            """
+            
+            output = execute_remote_command(ssh, patch_script, timeout=30)
+            logger.info(f"Worker HDFS config on {host}:\n{output}")
+            
+            # Restart Worker server
+            logger.info(f"Restarting Worker server on {host}...")
+            restart_script = f"""
+            sudo -u {deploy_user} {install_path}/bin/dolphinscheduler-daemon.sh stop worker-server
+            sleep 3
+            sudo -u {deploy_user} {install_path}/bin/dolphinscheduler-daemon.sh start worker-server
+            """
+            execute_remote_command(ssh, restart_script, timeout=60)
+            
+            logger.info(f"✓ Worker {i+1} configured and restarted on {host}")
+            time.sleep(5)
+            
+        except Exception as e:
+            logger.error(f"Failed to configure HDFS on Worker {host}: {e}")
+            raise
+        finally:
+            ssh.close()
+    
     # Clean up temp files
     if hadoop_config_files and 'temp_dir' in hadoop_config_files:
         import shutil
@@ -109,7 +160,7 @@ def apply_hdfs_config_to_api_servers(config, username='ec2-user', key_file=None)
         except Exception:
             pass
     
-    logger.info("✓ HDFS configuration applied to all API servers")
+    logger.info("✓ HDFS configuration applied to all API servers and Worker nodes")
     return True
 
 
