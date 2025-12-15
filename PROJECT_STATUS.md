@@ -34,7 +34,7 @@ DolphinScheduler EC2 Cluster Management CLI - A Python-based tool for deploying 
   - Zookeeper connectivity test
   - S3 access validation
 
-### ✅ Deployment Features (90%)
+### ✅ Deployment Features (95%)
 
 - **Cluster Creation**
   - Automated EC2 instance provisioning
@@ -45,6 +45,8 @@ DolphinScheduler EC2 Cluster Management CLI - A Python-based tool for deploying 
   - Hosts file configuration
   - DolphinScheduler installation
   - Service startup and verification
+  - HDFS storage configuration with automatic Hadoop config distribution
+  - S3 storage support with plugin installation
 
 - **Cluster Deletion**
   - Graceful service shutdown

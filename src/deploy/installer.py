@@ -444,6 +444,168 @@ def create_hdfs_directories(ssh, config):
         raise Exception(f"Failed to create HDFS directories: {e}")
 
 
+def setup_hadoop_config_on_node(node_ssh, config, host):
+    """
+    Setup Hadoop configuration files on a single node
+    
+    Copies core-site.xml and hdfs-site.xml from EMR master to:
+    1. /etc/hadoop/conf (system-wide)
+    2. DolphinScheduler component conf directories (api-server, master-server, worker-server, alert-server, tools)
+    
+    This is critical for HDFS connectivity - without these files, DolphinScheduler
+    defaults to local filesystem instead of HDFS.
+    
+    Args:
+        node_ssh: SSH connection to the node
+        config: Configuration dictionary
+        host: Host address (for logging)
+    
+    Returns:
+        True if successful
+    """
+    logger.debug(f"Setting up Hadoop config on {host}...")
+    
+    emr_config = config.get('emr', {})
+    hdfs_config = config.get('storage', {}).get('hdfs', {})
+    emr_master_host = emr_config.get('master_host', hdfs_config.get('namenode_host', 'localhost'))
+    emr_master_user = emr_config.get('master_user', 'hadoop')
+    install_path = config.get('deployment', {}).get('install_path', '/opt/dolphinscheduler')
+    deploy_user = config.get('deployment', {}).get('user', 'dolphinscheduler')
+    
+    try:
+        # Copy Hadoop config files from EMR master to this node
+        copy_cmd = f"""
+        # Copy core-site.xml and hdfs-site.xml from EMR master
+        scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 \\
+            {emr_master_user}@{emr_master_host}:/etc/hadoop/conf/core-site.xml /tmp/core-site.xml
+        
+        scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 \\
+            {emr_master_user}@{emr_master_host}:/etc/hadoop/conf/hdfs-site.xml /tmp/hdfs-site.xml
+        
+        # Verify copy
+        if [ ! -f /tmp/core-site.xml ] || [ ! -f /tmp/hdfs-site.xml ]; then
+            echo "ERROR: Failed to copy Hadoop config files"
+            exit 1
+        fi
+        
+        echo "✓ Hadoop config files copied successfully"
+        """
+        
+        execute_remote_command(node_ssh, copy_cmd, timeout=60)
+        
+        # Copy to /etc/hadoop/conf and DolphinScheduler component directories
+        install_cmd = f"""
+        # Create system-wide Hadoop config directory
+        sudo mkdir -p /etc/hadoop/conf
+        sudo cp /tmp/core-site.xml /etc/hadoop/conf/
+        sudo cp /tmp/hdfs-site.xml /etc/hadoop/conf/
+        sudo chmod 644 /etc/hadoop/conf/*.xml
+        
+        echo "✓ Hadoop config installed to /etc/hadoop/conf"
+        
+        # Copy to DolphinScheduler component conf directories
+        # This is critical for DolphinScheduler to find HDFS configuration
+        COMPONENTS="api-server master-server worker-server alert-server tools"
+        
+        for component in $COMPONENTS; do
+            CONF_DIR="{install_path}/$component/conf"
+            if [ -d "{install_path}/$component" ]; then
+                sudo mkdir -p "$CONF_DIR"
+                sudo cp /tmp/core-site.xml "$CONF_DIR/"
+                sudo cp /tmp/hdfs-site.xml "$CONF_DIR/"
+                sudo chown -R {deploy_user}:{deploy_user} "$CONF_DIR"
+                sudo chmod 644 "$CONF_DIR"/*.xml
+                echo "✓ Hadoop config copied to $CONF_DIR"
+            fi
+        done
+        
+        # Also copy to root conf directory
+        sudo mkdir -p {install_path}/conf
+        sudo cp /tmp/core-site.xml {install_path}/conf/
+        sudo cp /tmp/hdfs-site.xml {install_path}/conf/
+        sudo chown -R {deploy_user}:{deploy_user} {install_path}/conf
+        sudo chmod 644 {install_path}/conf/*.xml
+        echo "✓ Hadoop config copied to {install_path}/conf"
+        
+        # Clean up
+        rm -f /tmp/core-site.xml /tmp/hdfs-site.xml
+        
+        # Verify installation
+        echo "Verifying Hadoop config installation:"
+        ls -la /etc/hadoop/conf/*.xml 2>/dev/null || echo "No files in /etc/hadoop/conf"
+        ls -la {install_path}/api-server/conf/*.xml 2>/dev/null || echo "No files in api-server/conf"
+        """
+        
+        output = execute_remote_command(node_ssh, install_cmd, timeout=60)
+        logger.debug(f"Hadoop config installed on {host}:\n{output}")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to setup Hadoop config on {host}: {e}")
+        raise
+
+
+def copy_hadoop_config_to_nodes(ssh, config):
+    """
+    Verify Hadoop configuration files exist on EMR master
+    
+    The actual copying is done by setup_hadoop_config_on_node() during node deployment.
+    This function just validates that the EMR master has the required config files.
+    
+    Args:
+        ssh: SSH connection (can be any node)
+        config: Configuration dictionary
+    
+    Returns:
+        True if successful
+    """
+    logger.info("Verifying Hadoop configuration on EMR master...")
+    
+    hdfs_config = config.get('storage', {}).get('hdfs', {})
+    emr_config = config.get('emr', {})
+    emr_master_host = emr_config.get('master_host', hdfs_config.get('namenode_host', 'localhost'))
+    emr_master_user = emr_config.get('master_user', 'hadoop')
+    emr_master_key = emr_config.get('master_key_file')
+    
+    logger.info(f"Connecting to EMR master node: {emr_master_host}")
+    
+    # Connect to EMR master node
+    try:
+        emr_ssh = connect_ssh(emr_master_host, emr_master_user, emr_master_key, config=config)
+    except Exception as e:
+        logger.error(f"Failed to connect to EMR master node {emr_master_host}: {e}")
+        raise Exception(f"Cannot connect to EMR master node: {e}")
+    
+    try:
+        # Verify Hadoop configuration files exist
+        verify_script = """
+        # Check for core-site.xml and hdfs-site.xml
+        if [ -f /etc/hadoop/conf/core-site.xml ] && [ -f /etc/hadoop/conf/hdfs-site.xml ]; then
+            echo "✓ Hadoop config files found in /etc/hadoop/conf"
+            ls -la /etc/hadoop/conf/core-site.xml /etc/hadoop/conf/hdfs-site.xml
+        else
+            echo "ERROR: Hadoop configuration files not found"
+            echo "Looking for core-site.xml and hdfs-site.xml..."
+            find /etc -name "core-site.xml" 2>/dev/null || echo "core-site.xml not found"
+            find /etc -name "hdfs-site.xml" 2>/dev/null || echo "hdfs-site.xml not found"
+            exit 1
+        fi
+        """
+        
+        output = execute_remote_command(emr_ssh, verify_script, timeout=30)
+        logger.info(f"Hadoop config verification:\n{output}")
+        
+        emr_ssh.close()
+        logger.info("✓ Hadoop configuration verified on EMR master")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to verify Hadoop config on EMR master: {e}")
+        emr_ssh.close()
+        raise Exception(f"Failed to verify Hadoop config: {e}")
+
+
 def prepare_package_on_bastion(ssh, config):
     """
     Download DolphinScheduler package on bastion host for distribution to nodes
@@ -665,33 +827,8 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
         
         # Step 5.6: Copy Hadoop configuration files if HDFS is configured
         if storage_type == 'HDFS':
-            logger.info("Copying Hadoop configuration files from EMR master...")
-            try:
-                copy_hadoop_config_script = """
-                # Find Hadoop configuration directory on EMR
-                HADOOP_CONF_DIR=""
-                if [ -d /etc/hadoop/conf ]; then
-                    HADOOP_CONF_DIR=/etc/hadoop/conf
-                elif [ -d /opt/hadoop/etc/hadoop ]; then
-                    HADOOP_CONF_DIR=/opt/hadoop/etc/hadoop
-                elif [ -d /usr/local/hadoop/etc/hadoop ]; then
-                    HADOOP_CONF_DIR=/usr/local/hadoop/etc/hadoop
-                else
-                    echo "Hadoop configuration directory not found on EMR"
-                    exit 1
-                fi
-                
-                echo "Found Hadoop config at: $HADOOP_CONF_DIR"
-                
-                # Create tar archive
-                tar -czf /tmp/hadoop-conf.tar.gz -C $(dirname $HADOOP_CONF_DIR) $(basename $HADOOP_CONF_DIR)
-                echo "Hadoop config archived successfully"
-                """
-                
-                output = execute_remote_command(ssh, copy_hadoop_config_script, timeout=30)
-                logger.info(f"Hadoop config archived on EMR master:\n{output}")
-            except Exception as e:
-                logger.warning(f"Failed to archive Hadoop config: {e}")
+            logger.info("Copying Hadoop configuration files from EMR master to all nodes...")
+            copy_hadoop_config_to_nodes(ssh, config)
         
         # Step 6: Install MySQL JDBC driver
         install_mysql_jdbc_driver(ssh, extract_dir, deploy_user)
@@ -933,7 +1070,14 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                     else:
                         logger.info(f"[{host}] S3 plugin already installed")
                 elif storage_type == 'HDFS':
-                    logger.info(f"[{host}] HDFS storage is configured, checking HDFS connectivity...")
+                    logger.info(f"[{host}] HDFS storage is configured, setting up Hadoop configuration...")
+                    # Copy Hadoop config files from EMR master
+                    try:
+                        setup_hadoop_config_on_node(node_ssh, config, host)
+                    except Exception as e:
+                        logger.warning(f"[{host}] Failed to setup Hadoop config: {e}")
+                    
+                    logger.info(f"[{host}] Checking HDFS connectivity...")
                     if check_hdfs_connectivity(node_ssh, config):
                         logger.info(f"[{host}] HDFS is accessible, creating HDFS directories...")
                         # Create HDFS directories (only once, but safe to call multiple times)
