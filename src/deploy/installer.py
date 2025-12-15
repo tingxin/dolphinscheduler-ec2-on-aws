@@ -272,76 +272,68 @@ def upload_configuration_files(ssh, config, extract_dir):
     return True
 
 
-def upload_package_to_s3(config):
+def prepare_package_on_bastion(ssh, config):
     """
-    Upload DolphinScheduler package to S3 for faster distribution to nodes
+    Download DolphinScheduler package on bastion host for distribution to nodes
     
     Args:
+        ssh: SSH connection to first master (bastion)
         config: Configuration dictionary
     
     Returns:
-        S3 key if successful, None if failed
+        Path to package on bastion if successful, None if failed
     """
     try:
-        s3_bucket = config.get('storage', {}).get('bucket')
-        if not s3_bucket:
-            logger.info("No S3 bucket configured, skipping S3 upload")
-            return None
-        
-        import boto3
-        from botocore.exceptions import ClientError
-        
-        s3_client = boto3.client('s3', region_name=config.get('aws', {}).get('region', 'us-east-1'))
-        s3_key = "dolphinscheduler/apache-dolphinscheduler-3.2.0-bin.tar.gz"
-        
-        # Check if file already exists in S3
-        try:
-            s3_client.head_object(Bucket=s3_bucket, Key=s3_key)
-            logger.info(f"✓ DolphinScheduler package already exists in S3: s3://{s3_bucket}/{s3_key}")
-            return s3_key
-        except ClientError as e:
-            if e.response['Error']['Code'] != '404':
-                raise
-        
-        # Download package locally first
         download_url = config.get('advanced', {}).get('download_url', 
             'https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz')
         
-        logger.info("Downloading DolphinScheduler package to upload to S3...")
-        import requests
-        import tempfile
+        package_path = "/tmp/apache-dolphinscheduler-3.2.0-bin.tar.gz"
         
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            response = requests.get(download_url, stream=True, timeout=600)
-            response.raise_for_status()
+        # Check if package already exists
+        check_cmd = f"[ -f {package_path} ] && echo 'EXISTS' || echo 'NOT_EXISTS'"
+        result = execute_remote_command(ssh, check_cmd, timeout=10)
+        
+        if "EXISTS" in result:
+            # Verify file size
+            size_cmd = f"stat -c%s {package_path} 2>/dev/null || echo '0'"
+            size_result = execute_remote_command(ssh, size_cmd, timeout=10)
+            file_size = int(size_result.strip())
             
-            total_size = int(response.headers.get('content-length', 0))
-            downloaded = 0
-            
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    temp_file.write(chunk)
-                    downloaded += len(chunk)
-                    if total_size > 0:
-                        percent = (downloaded / total_size) * 100
-                        if downloaded % (1024 * 1024) == 0:  # Log every MB
-                            logger.info(f"Downloaded {downloaded // (1024*1024)}MB / {total_size // (1024*1024)}MB ({percent:.1f}%)")
-            
-            temp_file_path = temp_file.name
+            if file_size > 800 * 1024 * 1024:  # Should be around 859MB
+                logger.info(f"✓ DolphinScheduler package already exists on bastion: {package_path}")
+                return package_path
+            else:
+                logger.info(f"Package exists but size is wrong ({file_size} bytes), re-downloading...")
         
-        # Upload to S3
-        logger.info(f"Uploading package to S3: s3://{s3_bucket}/{s3_key}")
-        s3_client.upload_file(temp_file_path, s3_bucket, s3_key)
+        # Download package on bastion using wget (much faster)
+        logger.info("Downloading DolphinScheduler package on bastion host...")
+        download_cmd = f"""
+        set -e
+        echo "Starting download from {download_url}..."
         
-        # Clean up temp file
-        import os
-        os.unlink(temp_file_path)
+        # Remove any partial downloads
+        rm -f {package_path}*
         
-        logger.info(f"✓ Package uploaded to S3 successfully")
-        return s3_key
+        # Download with wget (faster and more reliable)
+        wget --progress=dot:giga --timeout=600 --tries=3 --retry-connrefused \\
+             "{download_url}" -O {package_path}
+        
+        # Verify download
+        if [ ! -f {package_path} ] || [ ! -s {package_path} ]; then
+            echo "✗ Download verification failed"
+            exit 1
+        fi
+        
+        file_size=$(stat -c%s {package_path})
+        echo "✓ Download completed, size: ${{file_size}} bytes ($((${{file_size}} / 1024 / 1024))MB)"
+        """
+        
+        execute_remote_command(ssh, download_cmd, timeout=800)
+        logger.info(f"✓ Package downloaded successfully on bastion: {package_path}")
+        return package_path
         
     except Exception as e:
-        logger.warning(f"Failed to upload package to S3: {e}")
+        logger.warning(f"Failed to prepare package on bastion: {e}")
         logger.info("Will fall back to direct download on each node")
         return None
 
@@ -385,9 +377,9 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
     ssh = get_ssh_connection()
     
     try:
-        # Step 0: Upload package to S3 for faster distribution (optional)
+        # Step 0: Prepare package on bastion for faster distribution
         logger.info("Preparing package distribution...")
-        upload_package_to_s3(config)
+        bastion_package_path = prepare_package_on_bastion(ssh, config)
         
         # Step 1: Download and extract package
         if package_file is None or config.get('deployment', {}).get('download_on_remote', True):
@@ -458,26 +450,37 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                     copy_cmd = f"sudo -u {deploy_user} cp -r {extract_dir}/* {config['deployment']['install_path']}/"
                     execute_remote_command(node_ssh, copy_cmd, timeout=120)
                 else:
-                    # Use S3 or first master as source for better efficiency
-                    s3_bucket = config.get('storage', {}).get('bucket')
-                    if s3_bucket:
-                        # Option 1: Download from S3 (if available)
-                        logger.info(f"[{host}] Downloading DolphinScheduler from S3...")
-                        s3_key = "dolphinscheduler/apache-dolphinscheduler-3.2.0-bin.tar.gz"
+                    # Try to get package from bastion first, then fall back to internet download
+                    if bastion_package_path:
+                        # Option 1: Copy from bastion host (fastest)
+                        logger.info(f"[{host}] Copying DolphinScheduler from bastion host...")
                         
-                        # Step 2a: Download from S3
-                        download_cmd = f"""
-                        set -e
-                        echo "Downloading DolphinScheduler from S3..."
+                        # Step 2a: Create temp directory
+                        execute_remote_command(node_ssh, """
                         TEMP_DIR="/tmp/ds_download_$(date +%s)"
                         mkdir -p $TEMP_DIR
                         cd $TEMP_DIR
+                        echo "Created temp directory: $TEMP_DIR"
+                        """, timeout=30)
                         
-                        # Download from S3
-                        aws s3 cp s3://{s3_bucket}/{s3_key} apache-dolphinscheduler-3.2.0-bin.tar.gz --region {config.get('aws', {}).get('region', 'us-east-1')}
-                        echo "✓ Downloaded from S3"
+                        # Step 2b: Copy from bastion using scp
+                        copy_cmd = f"""
+                        cd /tmp/ds_download_*
+                        echo "Copying package from bastion host {first_master}..."
+                        
+                        # Copy from bastion using ec2-user (has SSH keys)
+                        scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 \\
+                            ec2-user@{first_master}:{bastion_package_path} apache-dolphinscheduler-3.2.0-bin.tar.gz
+                        
+                        # Verify copy
+                        if [ ! -f apache-dolphinscheduler-3.2.0-bin.tar.gz ] || [ ! -s apache-dolphinscheduler-3.2.0-bin.tar.gz ]; then
+                            echo "✗ Copy verification failed"
+                            exit 1
+                        fi
+                        
+                        echo "✓ Package copied from bastion, size: $(du -h apache-dolphinscheduler-3.2.0-bin.tar.gz | cut -f1)"
                         """
-                        execute_remote_command(node_ssh, download_cmd, timeout=300)
+                        execute_remote_command(node_ssh, copy_cmd, timeout=300)
                         
                     else:
                         # Option 2: Download from internet (fallback)
