@@ -288,7 +288,19 @@ def status(config, detailed):
         click.echo("\n💾 External Services:")
         click.echo(f"  Database: {cfg['database']['host']}")
         click.echo(f"  Zookeeper: {', '.join(cfg['registry']['servers'][:2])}...")
-        click.echo(f"  S3 Bucket: {cfg['storage']['bucket']}")
+        
+        # Handle different storage types
+        storage_config = cfg.get('storage', {})
+        storage_type = storage_config.get('type', 'LOCAL').upper()
+        
+        if storage_type == 'S3':
+            s3_bucket = storage_config.get('s3', {}).get('bucket', 'N/A')
+            click.echo(f"  S3 Bucket: {s3_bucket}")
+        elif storage_type == 'HDFS':
+            hdfs_path = storage_config.get('hdfs', {}).get('upload_path', '/dolphinscheduler')
+            click.echo(f"  HDFS Path: {hdfs_path}")
+        else:
+            click.echo(f"  Storage: Local (/tmp/dolphinscheduler)")
         
         click.echo("\n" + "=" * 80)
         

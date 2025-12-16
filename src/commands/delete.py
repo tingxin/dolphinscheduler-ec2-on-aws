@@ -224,7 +224,19 @@ def delete_cluster(config, keep_data=False):
             logger.info("\n⚠️  Data cleanup not implemented")
             logger.info("To manually clean up:")
             logger.info(f"  - Database: {config['database']['database']}")
-            logger.info(f"  - S3 bucket: {config['storage']['bucket']}")
+            
+            # Handle different storage types
+            storage_config = config.get('storage', {})
+            storage_type = storage_config.get('type', 'LOCAL').upper()
+            
+            if storage_type == 'S3':
+                s3_bucket = storage_config.get('s3', {}).get('bucket', 'N/A')
+                logger.info(f"  - S3 bucket: {s3_bucket}")
+            elif storage_type == 'HDFS':
+                hdfs_path = storage_config.get('hdfs', {}).get('upload_path', '/dolphinscheduler')
+                logger.info(f"  - HDFS path: {hdfs_path}")
+            else:
+                logger.info(f"  - Local storage: /tmp/dolphinscheduler")
         else:
             logger.info("\n✓ Keeping database and S3 data")
         
