@@ -81,7 +81,7 @@ def validate_config(config):
             errors.append("Missing required field: storage.hdfs.namenode_port")
     elif storage_type == 'S3':
         # S3 storage requires additional S3-specific fields
-        s3_bucket = get_nested_value(config, 'storage.bucket')
+        s3_bucket = get_nested_value(config, 'storage.s3.bucket')
         s3_region = get_nested_value(config, 'storage.s3.region')
         s3_access_key = get_nested_value(config, 'storage.s3.access_key_id')
         s3_secret_key = get_nested_value(config, 'storage.s3.secret_access_key')

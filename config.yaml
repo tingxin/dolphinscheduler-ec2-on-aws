@@ -107,7 +107,9 @@ cluster:
     instance_type: t3.large
     nodes:
       - selector: 1  # 与 selector=1 的其他组件部署在同一台机器
+        availability_zone: us-east-2a
       - selector: 2
+        availability_zone: us-east-2b
 
   # Worker 节点配置
   worker:
@@ -115,12 +117,15 @@ cluster:
     instance_type: t3.xlarge
     nodes:
       - selector: 1  # 与 selector=1 的 master 部署在同一台机器
+        availability_zone: us-east-2a
         groups:
           - default
       - selector: 2
+        availability_zone: us-east-2b
         groups:
           - default
       - selector: 3
+        availability_zone: us-east-2c
         groups:
           - default
 
@@ -130,7 +135,9 @@ cluster:
     instance_type: t3.large
     nodes:
       - selector: 1  # 与 selector=1 的 master/worker 部署在同一台机器
+        availability_zone: us-east-2a
       - selector: 2  # 与 selector=2 的 master/worker 部署在同一台机器
+        availability_zone: us-east-2b
 
   # Alert 节点配置
   alert:
@@ -138,6 +145,7 @@ cluster:
     instance_type: t3.large
     nodes:
       - selector: 1  # 与 selector=1 的其他组件部署在同一台机器
+        availability_zone: us-east-2a
 
 # ===== 部署配置 - 必填 =====
 deployment:
