@@ -369,12 +369,14 @@ def install_s3_plugin(ssh, extract_dir, deploy_user, config):
     mkdir -p plugins
     
     # Download S3 plugin from Maven repository
-    # For DolphinScheduler 3.2.0, we need to download the S3 storage plugin
-    echo "Downloading S3 storage plugin..."
+    # Note: S3 storage is built-in for DolphinScheduler 3.2.x, no separate plugin needed
+    # The configuration is done via common.properties
+    echo "S3 storage is built-in for DolphinScheduler 3.2.x"
+    echo "Configuration will be done via common.properties"
     
-    # Try multiple sources for S3 plugin
-    S3_PLUGIN_URL="https://repo1.maven.org/maven2/org/apache/dolphinscheduler/dolphinscheduler-storage-plugin-s3/3.2.0/dolphinscheduler-storage-plugin-s3-3.2.0.jar"
-    S3_PLUGIN_FILE="plugins/dolphinscheduler-storage-plugin-s3-3.2.0.jar"
+    # Create plugins directory structure (may be needed for other plugins)
+    S3_PLUGIN_URL=""
+    S3_PLUGIN_FILE=""
     
     # Download S3 plugin
     if wget -O "$S3_PLUGIN_FILE" "$S3_PLUGIN_URL" 2>/dev/null || curl -L -o "$S3_PLUGIN_FILE" "$S3_PLUGIN_URL" 2>/dev/null; then

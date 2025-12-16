@@ -1,0 +1,285 @@
+
+Apache DolphinScheduler 3.2.2 集群部署指南 (三节点版)
+本指南基于官方文档，对3台Ubuntu 24.04 Linux机器的集群环境提供了详细的操作步骤
+
+1. 部署架构规划
+使用三台机器（Node1, Node2, Node3）来构建高可用集群
+IP 地址 (示例)	主机名 (示例)	部署组件
+10.8.1.58	ds-1	Master, Worker, Zookeeper, API Server, Alert Server
+10.8.1.199	ds-2	Master, Worker, Zookeeper
+10.8.1.55	ds-3	Master, Worker, Zookeeper
+重要说明:
+3台机器的安全组要允许互相访问
+
+首先在RDS的实例中创建一个数据库dolphinscheduler
+PGPASSWORD=postgres psql -h dolphin.cluster-cuk6n7jq1ves.us-west-2.rds.amazonaws.com -U postgres
+DROP DATABASE dolphinscheduler;
+CREATE DATABASE dolphinscheduler;
+
+
+2. 创建部署用户
+配置主机名，分开操作
+第一台操作
+echo "ds-1" | sudo tee /etc/hostname
+第二台操作
+echo "ds-2" | sudo tee /etc/hostname
+第三台操作
+echo "ds-3" | sudo tee /etc/hostname
+
+
+创建普通用户dolphinscheduler进行部署
+sudo useradd -m -s /bin/bash dolphinscheduler
+echo "dolphinscheduler" | sudo passwd --stdin dolphinscheduler
+echo "dolphinscheduler ALL=(ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers
+
+编辑三台机器的hosts文件
+cat << EOF | sudo tee -a /etc/hosts
+10.8.1.58	  ds-1
+10.8.1.199	ds-2
+10.8.1.55	  ds-3
+EOF
+
+重启系统
+sudo reboot
+
+以下步骤操作使用dolphinscheduler用户
+安装 Java (所有节点)，DolphinScheduler 3.2.2 推荐使用 Java 11 
+sudo apt update
+sudo apt install -y openjdk-11-jdk
+
+设置 JAVA_HOME 环境变量：
+echo 'export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64' | sudo tee -a /etc/profile
+echo 'export PATH=$JAVA_HOME/bin:$PATH' | sudo tee -a /etc/profile
+sudo source /etc/profile
+
+
+3. 安装 Zookeeper (3 节点)
+sudo mkdir -p /opt/zookeeper/data
+cd /opt/zookeeper/
+sudo wget https://archive.apache.org/dist/zookeeper/zookeeper-3.8.3/apache-zookeeper-3.8.3-bin.tar.gz
+sudo tar -xzf apache-zookeeper-3.8.3-bin.tar.gz
+sudo mv /opt/zookeeper/apache-zookeeper-3.8.3-bin/* /opt/zookeeper/
+sudo rm -rf /opt/zookeeper/apache-zookeeper-3.8.3-bin
+sudo rm -rf /opt/zookeeper/apache-zookeeper-3.8.3-bin.tar.gz
+sudo chown -R dolphinscheduler:dolphinscheduler /opt/zookeeper
+
+第1台操作
+echo 1 | sudo tee /opt/zookeeper/data/myid
+cat /opt/zookeeper/data/myid
+第2台操作
+echo 2 | sudo tee /opt/zookeeper/data/myid
+cat /opt/zookeeper/data/myid
+第3台操作
+echo 3 | sudo tee /opt/zookeeper/data/myid
+cat /opt/zookeeper/data/myid
+
+Zookeeper配置文件，主机名要和/etc/hosts匹配
+sudo tee /opt/zookeeper/conf/zoo.cfg > /dev/null <<EOF
+tickTime=2000
+initLimit=10
+syncLimit=5
+dataDir=/opt/zookeeper/data
+clientPort=2181
+
+server.1=ds-1:2888:3888
+server.2=ds-2:2888:3888
+server.3=ds-3:2888:3888
+
+autopurge.snapRetainCount=3
+autopurge.purgeInterval=1
+EOF
+
+配置zookeeper开机启动服务
+sudo tee /etc/systemd/system/zookeeper.service > /dev/null <<EOF
+[Unit]
+Description=Apache Zookeeper
+After=network.target
+
+[Service]
+Type=forking
+User=dolphinscheduler
+Group=dolphinscheduler
+Environment="JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64"
+ExecStart=/opt/zookeeper/bin/zkServer.sh start
+ExecStop=/opt/zookeeper/bin/zkServer.sh stop
+ExecReload=/opt/zookeeper/bin/zkServer.sh restart
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable zookeeper
+sudo systemctl start zookeeper
+sudo systemctl status zookeeper
+
+
+
+4. 安装dolphinscheduler
+sudo mkdir -p /opt/dolphinscheduler
+sudo chown -R dolphinscheduler:dolphinscheduler /opt/dolphinscheduler
+cd /opt/dolphinscheduler
+wget https://archive.apache.org/dist/dolphinscheduler/3.2.2/apache-dolphinscheduler-3.2.2-bin.tar.gz
+tar -zxvf apache-dolphinscheduler-3.2.2-bin.tar.gz
+rm apache-dolphinscheduler-3.2.2-bin.tar.gz
+cd apache-dolphinscheduler-3.2.2-bin
+
+## 在第一台台机器上执行初始化数据库，只需要在ds-1上执行一次
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/tools/bin/upgrade-schema.sh
+
+
+## 修改3台机器的dolphinscheduler配置
+### 全局配置
+cat > /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/env/dolphinscheduler_env.sh << EOF
+export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+
+export DATABASE=postgresql
+export SPRING_PROFILES_ACTIVE=postgresql
+export SPRING_DATASOURCE_URL="jdbc:postgresql://dolphin.cluster-cuk6n7jq1ves.us-west-2.rds.amazonaws.com:5432/dolphinscheduler"
+export SPRING_DATASOURCE_USERNAME=postgres
+export SPRING_DATASOURCE_PASSWORD=postgres
+EOF
+
+
+### Master应用配置：
+cat > /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/master-server/conf/application.yaml << EOF
+spring:
+  profiles:
+    active: postgresql
+  datasource:
+    driver-class-name: org.postgresql.Driver
+    url: jdbc:postgresql://dolphin.cluster-cuk6n7jq1ves.us-west-2.rds.amazonaws.com:5432/dolphinscheduler
+    username: postgres
+    password: postgres
+
+registry:
+  type: zookeeper
+  zookeeper:
+    namespace: dolphinscheduler
+    connect-string: ds-1:2181,ds-2:2181,ds-3:2181
+    retry-policy:
+      base-sleep-time: 60ms
+      max-sleep: 300ms
+      max-retries: 5
+    session-timeout: 30s
+    connection-timeout: 9s
+    block-until-connected: 600ms
+
+server:
+  port: 5679
+
+metrics:
+  enabled: true
+EOF
+
+
+### Worker应用配置：
+cat > /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/worker-server/conf/application.yaml << EOF
+spring:
+  profiles:
+    active: postgresql
+  datasource:
+    driver-class-name: org.postgresql.Driver
+    url: jdbc:postgresql://dolphin.cluster-cuk6n7jq1ves.us-west-2.rds.amazonaws.com:5432/dolphinscheduler
+    username: postgres
+    password: postgres
+
+registry:
+  type: zookeeper
+  zookeeper:
+    namespace: dolphinscheduler
+    connect-string: ds-1:2181,ds-2:2181,ds-3:2181
+    retry-policy:
+      base-sleep-time: 60ms
+      max-sleep: 300ms
+      max-retries: 5
+    session-timeout: 30s
+    connection-timeout: 9s
+    block-until-connected: 600ms
+
+server:
+  port: 1235
+
+metrics:
+  enabled: true
+EOF
+
+### Api应用配置，保持application.yaml配置不变
+### Alert应用配置，保持application.yaml配置不变
+
+
+### 配置S3存储，配置api和woker的common.properties
+### 注意：即使不使用 Azure，也必须配置 Azure 占位值，否则 CloudServiceImpl 初始化会失败
+### API Server 的 S3 配置
+cat > /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/api-server/conf/common.properties << EOF
+data.basedir.path=/tmp/dolphinscheduler
+
+resource.storage.type=S3
+resource.storage.upload.base.path=/dolphinscheduler
+
+resource.aws.access.key.id=xxxx
+resource.aws.secret.access.key=xxxx
+resource.aws.region=us-west-2
+resource.aws.s3.bucket.name=nwcd-dolphin
+resource.aws.s3.endpoint=https://s3.us-west-2.amazonaws.com
+
+resource.azure.client.id=placeholder
+resource.azure.client.secret=placeholder
+resource.azure.subId=placeholder
+resource.azure.tenant.id=placeholder
+EOF
+
+### Worker Server 的 S3 配置
+cat > /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/worker-server/conf/common.properties << EOF
+data.basedir.path=/tmp/dolphinscheduler
+
+resource.storage.type=S3
+resource.storage.upload.base.path=/dolphinscheduler
+
+resource.aws.access.key.id=xxxx
+resource.aws.secret.access.key=xxxx
+resource.aws.region=us-west-2
+resource.aws.s3.bucket.name=nwcd-dolphin
+resource.aws.s3.endpoint=https://s3.us-west-2.amazonaws.com
+
+resource.azure.client.id=placeholder
+resource.azure.client.secret=placeholder
+resource.azure.subId=placeholder
+resource.azure.tenant.id=placeholder
+EOF
+
+
+
+### dolphinscheduler的4个组件脚本
+开启4个组件脚本
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh start master-server
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh start worker-server
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh start api-server
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh start alert-server
+
+关闭4个组件脚本
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh stop master-server
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh stop worker-server
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh stop api-server
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh stop alert-server
+
+查看4个组件状态脚本
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh status master-server
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh status worker-server
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh status api-server
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh status alert-server
+
+
+节点ds-1，启动4个服务
+节点ds-2，启动master和worker
+节点ds-3，启动master和worker
+
+
+
+UI的路径
+http://ds-1-public-ip:12345/dolphinscheduler/ui 即可登录系统 UI
+默认的用户名和密码是 
+admin
+dolphinscheduler123
+

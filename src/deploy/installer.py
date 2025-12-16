@@ -1,5 +1,6 @@
 """
-DolphinScheduler 3.2.0 installation and deployment (Simplified)
+DolphinScheduler 3.2.x installation and deployment (Simplified)
+Supports 3.2.0, 3.2.2 and other 3.2.x versions
 """
 import os
 import time
@@ -702,273 +703,401 @@ def copy_hadoop_config_to_nodes(ssh, config):
     return download_hadoop_config_from_emr(config)
 
 
-def prepare_package_on_bastion(ssh, config):
+def download_package_to_local(config):
     """
-    Download DolphinScheduler package on bastion host for distribution to nodes
+    Download DolphinScheduler package to local machine (bastion/control node)
+    
+    Priority:
+    1. Check if local package already exists
+    2. Download from internet (Apache archive)
     
     Args:
-        ssh: SSH connection to first master (bastion)
         config: Configuration dictionary
     
     Returns:
-        Path to package on bastion if successful, None if failed
+        Path to local package file if successful, None if failed
     """
-    try:
-        package_path = "/tmp/apache-dolphinscheduler-3.2.0-bin.tar.gz"
-        
-        # Check if package already exists
-        check_cmd = f"[ -f {package_path} ] && echo 'EXISTS' || echo 'NOT_EXISTS'"
-        result = execute_remote_command(ssh, check_cmd, timeout=10)
-        
-        if "EXISTS" in result:
-            # Verify file size
-            size_cmd = f"stat -c%s {package_path} 2>/dev/null || echo '0'"
-            size_result = execute_remote_command(ssh, size_cmd, timeout=10)
-            file_size = int(size_result.strip())
-            
+    import subprocess
+    import shutil
+    
+    version = config.get('deployment', {}).get('version', '3.2.2')
+    local_temp_dir = tempfile.mkdtemp(prefix='dolphinscheduler_deploy_')
+    package_filename = f"apache-dolphinscheduler-{version}-bin.tar.gz"
+    local_package_path = os.path.join(local_temp_dir, package_filename)
+    
+    logger.info(f"Preparing DolphinScheduler {version} package on local machine...")
+    
+    # Check if package exists in current directory or common locations
+    search_paths = [
+        os.path.join(os.getcwd(), package_filename),
+        os.path.join(os.getcwd(), 'dolphinscheduler', package_filename),
+        f"/tmp/{package_filename}",
+        os.path.expanduser(f"~/Downloads/{package_filename}")
+    ]
+    
+    for path in search_paths:
+        if os.path.exists(path):
+            file_size = os.path.getsize(path)
             if file_size > 800 * 1024 * 1024:  # Should be around 859MB
-                logger.info(f"✓ DolphinScheduler package already exists on bastion: {package_path}")
-                return package_path
+                logger.info(f"✓ Found existing package at: {path} ({file_size // 1024 // 1024}MB)")
+                # Copy to temp dir
+                shutil.copy2(path, local_package_path)
+                return {'package_path': local_package_path, 'temp_dir': local_temp_dir}
             else:
-                logger.info(f"Package exists but size is wrong ({file_size} bytes), re-downloading...")
+                logger.warning(f"Found package at {path} but size is wrong ({file_size} bytes)")
+    
+    # Download from internet
+    download_url = config.get('advanced', {}).get('download_url', 
+        f'https://archive.apache.org/dist/dolphinscheduler/{version}/apache-dolphinscheduler-{version}-bin.tar.gz')
+    
+    logger.info(f"Downloading DolphinScheduler from: {download_url}")
+    logger.info("This may take several minutes depending on your network speed...")
+    
+    try:
+        # Try wget first
+        wget_cmd = [
+            'wget', '--progress=dot:giga', '--timeout=600', '--tries=3',
+            download_url, '-O', local_package_path
+        ]
         
-        # Priority 1: Try S3 download first (fastest) - from new package_distribution config
-        pkg_dist_config = config.get('package_distribution', {})
-        if pkg_dist_config.get('enabled', False):
-            logger.info("Downloading DolphinScheduler package from S3 on bastion host...")
-            s3_config = pkg_dist_config.get('s3', {})
-            s3_bucket = s3_config.get('bucket')
-            s3_key = s3_config.get('key')
-            s3_region = s3_config.get('region', config.get('aws', {}).get('region', 'us-east-2'))
+        result = subprocess.run(wget_cmd, capture_output=True, text=True, timeout=900)
+        
+        if result.returncode != 0:
+            logger.warning(f"wget failed: {result.stderr}, trying curl...")
+            # Try curl as fallback
+            curl_cmd = [
+                'curl', '-L', '--connect-timeout', '30', '--max-time', '900',
+                '--retry', '3', download_url, '-o', local_package_path
+            ]
+            result = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=900)
             
-            if not s3_bucket or not s3_key:
-                logger.warning("S3 package distribution enabled but bucket or key not configured")
-            else:
-                s3_download_cmd = f"""
-                set -e
-                echo "Starting S3 download from s3://{s3_bucket}/{s3_key}..."
-                
-                # Remove any partial downloads
-                rm -f {package_path}*
-                
-                # Optimize S3 download settings
-                aws configure set default.s3.max_concurrent_requests 20
-                aws configure set default.s3.max_bandwidth 100MB/s
-                aws configure set default.s3.multipart_threshold 64MB
-                aws configure set default.s3.multipart_chunksize 16MB
-                
-                # Download from S3 with optimizations
-                if aws s3 cp s3://{s3_bucket}/{s3_key} {package_path} --region {s3_region} --no-progress; then
-                    echo "✓ S3 download completed successfully"
-                else
-                    echo "✗ S3 download failed"
-                    exit 1
-                fi
-                
-                # Verify download
-                if [ ! -f {package_path} ] || [ ! -s {package_path} ]; then
-                    echo "✗ S3 download verification failed"
-                    exit 1
-                fi
-                
-                file_size=$(stat -c%s {package_path})
-                echo "✓ S3 download completed, size: ${{file_size}} bytes ($((${{file_size}} / 1024 / 1024))MB)"
-                """
-                
-                try:
-                    execute_remote_command(ssh, s3_download_cmd, timeout=300)
-                    logger.info(f"✓ Package downloaded from S3 successfully on bastion: {package_path}")
-                    return package_path
-                except Exception as e:
-                    logger.warning(f"S3 download failed: {e}, falling back to internet download")
-        
-        # Priority 2: Download from internet (fallback)
-        download_url = config.get('advanced', {}).get('download_url', 
-            'https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz')
-        
-        logger.info("Downloading DolphinScheduler package from internet on bastion host...")
-        download_cmd = f"""
-        set -e
-        echo "Starting download from {download_url}..."
-        
-        # Remove any partial downloads
-        rm -f {package_path}*
-        
-        # Download with wget (faster and more reliable)
-        wget --progress=dot:giga --timeout=600 --tries=3 --retry-connrefused \\
-             "{download_url}" -O {package_path}
+            if result.returncode != 0:
+                raise Exception(f"Both wget and curl failed: {result.stderr}")
         
         # Verify download
-        if [ ! -f {package_path} ] || [ ! -s {package_path} ]; then
-            echo "✗ Download verification failed"
-            exit 1
-        fi
+        if not os.path.exists(local_package_path):
+            raise Exception("Download completed but file not found")
         
-        file_size=$(stat -c%s {package_path})
-        echo "✓ Download completed, size: ${{file_size}} bytes ($((${{file_size}} / 1024 / 1024))MB)"
-        """
+        file_size = os.path.getsize(local_package_path)
+        if file_size < 800 * 1024 * 1024:
+            raise Exception(f"Downloaded file too small: {file_size} bytes")
         
-        execute_remote_command(ssh, download_cmd, timeout=800)
-        logger.info(f"✓ Package downloaded successfully on bastion: {package_path}")
-        return package_path
+        logger.info(f"✓ Package downloaded successfully: {local_package_path} ({file_size // 1024 // 1024}MB)")
+        return {'package_path': local_package_path, 'temp_dir': local_temp_dir}
         
-    except Exception as e:
-        logger.warning(f"Failed to prepare package on bastion: {e}")
-        logger.info("Will fall back to direct download on each node")
+    except subprocess.TimeoutExpired:
+        logger.error("Download timed out after 15 minutes")
+        shutil.rmtree(local_temp_dir, ignore_errors=True)
         return None
+    except Exception as e:
+        logger.error(f"Failed to download package: {e}")
+        shutil.rmtree(local_temp_dir, ignore_errors=True)
+        return None
+
+
+def extract_and_configure_local(config, package_info):
+    """
+    Extract package and configure on local machine before distribution
+    
+    Args:
+        config: Configuration dictionary
+        package_info: Dict with 'package_path' and 'temp_dir'
+    
+    Returns:
+        Path to configured package directory
+    """
+    import subprocess
+    import tarfile
+    
+    version = config.get('deployment', {}).get('version', '3.2.2')
+    temp_dir = package_info['temp_dir']
+    package_path = package_info['package_path']
+    extract_dir = os.path.join(temp_dir, f"apache-dolphinscheduler-{version}-bin")
+    
+    logger.info("Extracting package on local machine...")
+    
+    # Extract package
+    try:
+        with tarfile.open(package_path, 'r:gz') as tar:
+            tar.extractall(path=temp_dir)
+        logger.info(f"✓ Package extracted to: {extract_dir}")
+    except Exception as e:
+        logger.error(f"Failed to extract package: {e}")
+        raise
+    
+    # Generate and write configuration files
+    logger.info("Generating configuration files...")
+    
+    deploy_user = config['deployment']['user']
+    components = ['master', 'worker', 'api', 'alert']
+    component_dirs = {
+        'master': 'master-server',
+        'worker': 'worker-server', 
+        'api': 'api-server',
+        'alert': 'alert-server'
+    }
+    
+    # Generate application.yaml for each component
+    for component in components:
+        yaml_content = generate_application_yaml_v320(config, component)
+        component_dir = component_dirs[component]
+        conf_dir = os.path.join(extract_dir, component_dir, 'conf')
+        os.makedirs(conf_dir, exist_ok=True)
+        
+        yaml_path = os.path.join(conf_dir, 'application.yaml')
+        with open(yaml_path, 'w') as f:
+            f.write(yaml_content)
+        logger.info(f"✓ Generated {component} application.yaml")
+    
+    # Generate tools application.yaml
+    tools_conf_dir = os.path.join(extract_dir, 'tools', 'conf')
+    os.makedirs(tools_conf_dir, exist_ok=True)
+    tools_yaml_content = generate_application_yaml_v320(config, 'master')
+    with open(os.path.join(tools_conf_dir, 'application.yaml'), 'w') as f:
+        f.write(tools_yaml_content)
+    logger.info("✓ Generated tools application.yaml")
+    
+    # Generate install_env.sh
+    bin_env_dir = os.path.join(extract_dir, 'bin', 'env')
+    os.makedirs(bin_env_dir, exist_ok=True)
+    
+    install_env_content = generate_install_env_v320(config)
+    install_env_path = os.path.join(bin_env_dir, 'install_env.sh')
+    with open(install_env_path, 'w') as f:
+        f.write(install_env_content)
+    os.chmod(install_env_path, 0o755)
+    logger.info("✓ Generated install_env.sh")
+    
+    # Generate dolphinscheduler_env.sh
+    ds_env_content = generate_dolphinscheduler_env_v320(config)
+    ds_env_path = os.path.join(bin_env_dir, 'dolphinscheduler_env.sh')
+    with open(ds_env_path, 'w') as f:
+        f.write(ds_env_content)
+    os.chmod(ds_env_path, 0o755)
+    logger.info("✓ Generated dolphinscheduler_env.sh")
+    
+    # Generate common.properties for S3/HDFS storage
+    common_props_content = generate_common_properties_v320(config)
+    
+    # Write to all component conf directories
+    for component in components:
+        component_dir = component_dirs[component]
+        conf_dir = os.path.join(extract_dir, component_dir, 'conf')
+        props_path = os.path.join(conf_dir, 'common.properties')
+        with open(props_path, 'w') as f:
+            f.write(common_props_content)
+    
+    # Also write to tools/conf
+    tools_props_path = os.path.join(tools_conf_dir, 'common.properties')
+    with open(tools_props_path, 'w') as f:
+        f.write(common_props_content)
+    logger.info("✓ Generated common.properties for all components")
+    
+    # Make all shell scripts executable
+    for root, dirs, files in os.walk(os.path.join(extract_dir, 'bin')):
+        for file in files:
+            if file.endswith('.sh'):
+                os.chmod(os.path.join(root, file), 0o755)
+    
+    logger.info(f"✓ Package configured at: {extract_dir}")
+    return extract_dir
+
+
+def create_distribution_tarball(extract_dir, temp_dir, version):
+    """
+    Create a tarball of the configured package for distribution
+    
+    Args:
+        extract_dir: Path to configured package directory
+        temp_dir: Temporary directory
+        version: DolphinScheduler version
+    
+    Returns:
+        Path to distribution tarball
+    """
+    import tarfile
+    
+    tarball_path = os.path.join(temp_dir, f"dolphinscheduler-{version}-configured.tar.gz")
+    
+    logger.info("Creating distribution tarball...")
+    
+    with tarfile.open(tarball_path, 'w:gz') as tar:
+        tar.add(extract_dir, arcname=os.path.basename(extract_dir))
+    
+    file_size = os.path.getsize(tarball_path)
+    logger.info(f"✓ Distribution tarball created: {tarball_path} ({file_size // 1024 // 1024}MB)")
+    
+    return tarball_path
+
+
+def distribute_to_node(node_ssh, host, tarball_path, config, deploy_user, version):
+    """
+    Distribute configured package to a single node via SCP/SFTP
+    
+    Args:
+        node_ssh: SSH connection to the node
+        host: Node hostname/IP
+        tarball_path: Path to local tarball
+        config: Configuration dictionary
+        deploy_user: Deployment user
+        version: DolphinScheduler version
+    
+    Returns:
+        True if successful
+    """
+    install_path = config['deployment']['install_path']
+    remote_tarball = f"/tmp/dolphinscheduler-{version}-configured.tar.gz"
+    
+    logger.info(f"[{host}] Uploading configured package...")
+    
+    # Upload tarball via SFTP
+    upload_file(node_ssh, tarball_path, remote_tarball)
+    logger.info(f"[{host}] ✓ Package uploaded")
+    
+    # Extract and install
+    logger.info(f"[{host}] Installing package...")
+    install_cmd = f"""
+    set -e
+    
+    # Create install directory
+    sudo mkdir -p {install_path}
+    
+    # Extract to temp location
+    cd /tmp
+    rm -rf apache-dolphinscheduler-{version}-bin
+    tar -xzf {remote_tarball}
+    
+    # Copy to install path
+    sudo cp -r apache-dolphinscheduler-{version}-bin/* {install_path}/
+    
+    # Set ownership
+    sudo chown -R {deploy_user}:{deploy_user} {install_path}
+    
+    # Make scripts executable
+    sudo chmod +x {install_path}/bin/*.sh
+    sudo find {install_path}/bin -name "*.sh" -exec chmod +x {{}} \\;
+    
+    # Clean up
+    rm -rf /tmp/apache-dolphinscheduler-{version}-bin
+    rm -f {remote_tarball}
+    
+    echo "✓ Installation completed"
+    """
+    
+    output = execute_remote_command(node_ssh, install_cmd, timeout=180)
+    logger.info(f"[{host}] ✓ Package installed")
+    
+    return True
 
 
 def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user', key_file=None):
     """
-    Deploy DolphinScheduler 3.2.0 to all nodes using the official install.sh script
+    Deploy DolphinScheduler 3.2.x to all nodes
+    
+    New deployment flow:
+    1. Download package to local machine (bastion/control node)
+    2. Extract and configure on local machine
+    3. Create distribution tarball
+    4. Distribute to all nodes via SSH/SCP
+    5. Initialize database on first node
+    6. Install MySQL JDBC driver on all nodes
     
     Args:
         config: Configuration dictionary
-        package_file: Path to DolphinScheduler package (optional, will download on remote if not provided)
+        package_file: Path to DolphinScheduler package (optional, will download if not provided)
         username: SSH username
         key_file: SSH key file path
     
     Returns:
         True if successful
     """
-    logger.info("Deploying DolphinScheduler 3.2.0...")
+    import shutil
     
-    # Get first master node for installation
-    first_master = config['cluster']['master']['nodes'][0]['host']
-    version = config['deployment']['version']
+    version = config.get('deployment', {}).get('version', '3.2.2')
     deploy_user = config['deployment']['user']
+    install_path = config['deployment']['install_path']
     
-    def get_ssh_connection():
-        """Get SSH connection with retry mechanism"""
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                ssh = connect_ssh(first_master, username, key_file, config=config)
-                # Test connection
-                ssh.exec_command('echo "connection test"')
-                return ssh
-            except Exception as e:
-                logger.warning(f"SSH connection attempt {attempt + 1}/{max_retries} failed: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(5)
-                else:
-                    raise Exception(f"Failed to establish SSH connection after {max_retries} attempts")
+    logger.info(f"=" * 60)
+    logger.info(f"Deploying DolphinScheduler {version}")
+    logger.info(f"=" * 60)
     
-    ssh = get_ssh_connection()
+    # Collect all unique nodes (using selector to deduplicate)
+    all_nodes = []
+    seen_hosts = set()
+    
+    for component in ['master', 'worker', 'api', 'alert']:
+        for node in config['cluster'][component]['nodes']:
+            host = node['host']
+            if host not in seen_hosts:
+                seen_hosts.add(host)
+                all_nodes.append({
+                    'host': host,
+                    'components': [component]
+                })
+            else:
+                # Add component to existing node
+                for n in all_nodes:
+                    if n['host'] == host:
+                        n['components'].append(component)
+                        break
+    
+    logger.info(f"Target nodes: {len(all_nodes)}")
+    for node in all_nodes:
+        logger.info(f"  - {node['host']}: {', '.join(node['components'])}")
+    
+    first_node = all_nodes[0]['host']
+    temp_dir = None
     
     try:
-        # Step 0: Prepare package on bastion for faster distribution
-        logger.info("Preparing package distribution...")
-        bastion_package_path = prepare_package_on_bastion(ssh, config)
+        # ============================================================
+        # Step 1: Download package to local machine
+        # ============================================================
+        logger.info("")
+        logger.info("Step 1: Downloading package to local machine...")
         
-        # Step 1: Download and extract package on first master node
-        if bastion_package_path:
-            logger.info("Using package from bastion host for first master node...")
-            extract_dir = f"/tmp/apache-dolphinscheduler-{version}-bin"
-            
-            # Extract package on first master
-            extract_cmd = f"""
-            cd /tmp
-            rm -rf apache-dolphinscheduler-{version}-bin
-            tar -xzf {bastion_package_path}
-            echo "✓ Package extracted to {extract_dir}"
-            """
-            execute_remote_command(ssh, extract_cmd, timeout=120)
-        elif package_file is None or config.get('deployment', {}).get('download_on_remote', True):
-            logger.info("Downloading DolphinScheduler 3.2.0 directly on target node...")
-            extract_dir = download_and_extract_remote(ssh, config)
+        if package_file and os.path.exists(package_file):
+            logger.info(f"Using provided package: {package_file}")
+            temp_dir = tempfile.mkdtemp(prefix='dolphinscheduler_deploy_')
+            package_info = {'package_path': package_file, 'temp_dir': temp_dir}
         else:
-            logger.info("Uploading DolphinScheduler package from local...")
-            extract_dir = upload_and_extract_package(ssh, package_file, version)
+            package_info = download_package_to_local(config)
+            if not package_info:
+                raise Exception("Failed to download DolphinScheduler package")
+            temp_dir = package_info['temp_dir']
         
-        # Step 2: Set ownership and permissions
-        setup_package_permissions(ssh, extract_dir, deploy_user)
+        # ============================================================
+        # Step 2: Extract and configure on local machine
+        # ============================================================
+        logger.info("")
+        logger.info("Step 2: Extracting and configuring package locally...")
         
-        # Step 3: Create resource directories
-        create_resource_directories(ssh, config)
+        extract_dir = extract_and_configure_local(config, package_info)
         
-        # Step 4: Upload configuration files
-        upload_configuration_files(ssh, config, extract_dir)
+        # ============================================================
+        # Step 3: Create distribution tarball
+        # ============================================================
+        logger.info("")
+        logger.info("Step 3: Creating distribution tarball...")
         
-        # Step 4.5: Check storage type and download Hadoop config if HDFS
-        storage_type = config.get('storage', {}).get('type', 'LOCAL').upper()
-        hadoop_config_files = None
-        hdfs_address = None
+        tarball_path = create_distribution_tarball(extract_dir, temp_dir, version)
         
-        if storage_type == 'HDFS':
-            logger.info("HDFS storage is configured, downloading Hadoop configuration files...")
-            hadoop_config_files = download_hadoop_config_from_emr(config)
-            if hadoop_config_files:
-                hdfs_address = hadoop_config_files.get('hdfs_address')
-                logger.info(f"✓ Hadoop configuration files downloaded, HDFS address: {hdfs_address}")
-            else:
-                logger.warning("⚠ Failed to download Hadoop config files, HDFS may not work correctly")
+        # ============================================================
+        # Step 4: Distribute to all nodes
+        # ============================================================
+        logger.info("")
+        logger.info(f"Step 4: Distributing to {len(all_nodes)} nodes...")
         
-        # Step 5: Upload common.properties (critical for resource center)
-        # Pass hdfs_address to use the correct address from core-site.xml
-        upload_common_properties(ssh, config, extract_dir, hdfs_address_override=hdfs_address)
-        
-        # Step 5.4: Check and configure storage based on type
-        if storage_type == 'S3':
-            logger.info("S3 storage is configured, checking and installing S3 plugin...")
-            if not check_s3_plugin_installed(ssh, extract_dir):
-                logger.info("S3 plugin not found, installing...")
-                install_s3_plugin(ssh, extract_dir, deploy_user, config)
-                configure_s3_storage(ssh, extract_dir, deploy_user, config)
-            else:
-                logger.info("S3 plugin already installed")
-        elif storage_type == 'HDFS':
-            logger.info("HDFS storage is configured, checking HDFS connectivity...")
-            if check_hdfs_connectivity(ssh, config):
-                logger.info("HDFS is accessible, creating HDFS directories on EMR master...")
-                # Create HDFS directories on EMR master node before deployment
-                try:
-                    create_hdfs_directories(ssh, config)
-                    logger.info("✓ HDFS directories created successfully")
-                except Exception as e:
-                    logger.error(f"Failed to create HDFS directories: {e}")
-                    raise
-                configure_hdfs_storage(ssh, extract_dir, deploy_user, config)
-            else:
-                logger.error("HDFS is not accessible from the node")
-                raise Exception("HDFS NameNode is not reachable. Please verify EMR cluster is running and network connectivity is correct.")
-        else:
-            logger.info("LOCAL storage is configured (default)")
-        
-        # Step 6: Install MySQL JDBC driver
-        install_mysql_jdbc_driver(ssh, extract_dir, deploy_user)
-        
-        # Step 7: Initialize database schema
-        initialize_database(ssh, config, extract_dir)
-        
-        # Step 8: Generate application.yaml files for all components
-        configure_components(ssh, config, extract_dir)
-        
-        # Step 7: Deploy to all nodes manually
-        logger.info("Deploying DolphinScheduler to all cluster nodes...")
-        
-        # Deploy to each node sequentially to avoid SSH key issues
-        all_nodes = []
-        for component in ['master', 'worker', 'api', 'alert']:
-            for node in config['cluster'][component]['nodes']:
-                all_nodes.append({
-                    'host': node['host'],
-                    'component': component
-                })
-        
-        def deploy_to_node(node_info):
-            host = node_info['host']
-            component = node_info['component']
+        for i, node in enumerate(all_nodes):
+            host = node['host']
+            logger.info(f"")
+            logger.info(f"[{i+1}/{len(all_nodes)}] Deploying to {host}...")
             
-            logger.info(f"Deploying {component} to {host}...")
-            
-            # Connect with retry mechanism for better reliability
+            # Connect to node
             max_retries = 3
             node_ssh = None
             for attempt in range(max_retries):
                 try:
                     node_ssh = connect_ssh(host, username, key_file, config=config)
-                    # Test connection
                     node_ssh.exec_command('echo "connection test"', timeout=10)
                     break
                 except Exception as e:
@@ -976,268 +1105,108 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                     if attempt < max_retries - 1:
                         time.sleep(5)
                     else:
-                        raise Exception(f"Failed to establish SSH connection to {host} after {max_retries} attempts")
+                        raise Exception(f"Failed to connect to {host} after {max_retries} attempts")
             
             try:
-                # Step 1: Create install directory
-                logger.info(f"[{host}] Creating install directory...")
-                execute_remote_command(node_ssh, f"sudo mkdir -p {config['deployment']['install_path']}")
-                execute_remote_command(node_ssh, f"sudo chown {deploy_user}:{deploy_user} {config['deployment']['install_path']}")
+                # Distribute configured package
+                distribute_to_node(node_ssh, host, tarball_path, config, deploy_user, version)
                 
-                # Step 2: Deploy files to install directory
-                if host == first_master:
-                    logger.info(f"[{host}] Copying files from temp directory...")
-                    copy_cmd = f"sudo -u {deploy_user} cp -r {extract_dir}/* {config['deployment']['install_path']}/"
-                    execute_remote_command(node_ssh, copy_cmd, timeout=120)
-                else:
-                    # Priority 1: Download from S3 (most reliable) - from new package_distribution config
-                    pkg_dist_config = config.get('package_distribution', {})
-                    if pkg_dist_config.get('enabled', False):
-                        logger.info(f"[{host}] Downloading DolphinScheduler from S3...")
-                        
-                        # Step 2a: Create temp directory (use home dir to avoid tmpfs limits)
-                        execute_remote_command(node_ssh, """
-                        TEMP_DIR="/home/ec2-user/ds_download_$(date +%s)"
-                        mkdir -p $TEMP_DIR
-                        cd $TEMP_DIR
-                        echo "Created temp directory: $TEMP_DIR"
-                        """, timeout=30)
-                        
-                        # Step 2b: Download from S3
-                        s3_config = pkg_dist_config.get('s3', {})
-                        s3_bucket = s3_config.get('bucket')
-                        s3_key = s3_config.get('key')
-                        s3_region = s3_config.get('region', config.get('aws', {}).get('region', 'us-east-2'))
-                        
-                        download_cmd = f"""
-                        cd /home/ec2-user/ds_download_*
-                        echo "Downloading from S3: s3://{s3_bucket}/{s3_key}..."
-                        
-                        # Optimize S3 download with multipart and higher concurrency
-                        aws configure set default.s3.max_concurrent_requests 20
-                        aws configure set default.s3.max_bandwidth 100MB/s
-                        aws configure set default.s3.multipart_threshold 64MB
-                        aws configure set default.s3.multipart_chunksize 16MB
-                        
-                        # Download from S3 using AWS CLI with optimizations
-                        if aws s3 cp s3://{s3_bucket}/{s3_key} apache-dolphinscheduler-3.2.0-bin.tar.gz --region {s3_region} --no-progress; then
-                            echo "✓ S3 download completed successfully"
-                        else
-                            echo "✗ S3 download failed"
-                            exit 1
-                        fi
-                        
-                        # Verify download
-                        if [ ! -f apache-dolphinscheduler-3.2.0-bin.tar.gz ] || [ ! -s apache-dolphinscheduler-3.2.0-bin.tar.gz ]; then
-                            echo "✗ S3 download verification failed"
-                            exit 1
-                        fi
-                        
-                        echo "✓ Package downloaded from S3, size: $(du -h apache-dolphinscheduler-3.2.0-bin.tar.gz | cut -f1)"
-                        """
-                        execute_remote_command(node_ssh, download_cmd, timeout=300)
-                        
-                    # Priority 2: Copy from bastion host (if S3 fails)
-                    elif bastion_package_path:
-                        logger.info(f"[{host}] Trying to copy DolphinScheduler from bastion host...")
-                        
-                        # Step 2a: Create temp directory (use home dir to avoid tmpfs limits)
-                        execute_remote_command(node_ssh, """
-                        TEMP_DIR="/home/ec2-user/ds_download_$(date +%s)"
-                        mkdir -p $TEMP_DIR
-                        cd $TEMP_DIR
-                        echo "Created temp directory: $TEMP_DIR"
-                        """, timeout=30)
-                        
-                        # Step 2b: Try to copy from bastion using scp (may fail due to SSH keys)
-                        try:
-                            copy_cmd = f"""
-                            cd /home/ec2-user/ds_download_*
-                            echo "Copying package from bastion host {first_master}..."
-                            
-                            # Copy from bastion using ec2-user (has SSH keys)
-                            scp -o StrictHostKeyChecking=no -o ConnectTimeout=30 \\
-                                ec2-user@{first_master}:{bastion_package_path} apache-dolphinscheduler-3.2.0-bin.tar.gz
-                            
-                            # Verify copy
-                            if [ ! -f apache-dolphinscheduler-3.2.0-bin.tar.gz ] || [ ! -s apache-dolphinscheduler-3.2.0-bin.tar.gz ]; then
-                                echo "✗ Copy verification failed"
-                                exit 1
-                            fi
-                            
-                            echo "✓ Package copied from bastion, size: $(du -h apache-dolphinscheduler-3.2.0-bin.tar.gz | cut -f1)"
-                            """
-                            execute_remote_command(node_ssh, copy_cmd, timeout=300)
-                        except Exception as e:
-                            logger.warning(f"[{host}] Failed to copy from bastion: {e}, falling back to internet download")
-                            # Fall through to internet download
-                            
-                    # Priority 3: Download from internet (fallback)
-                    else:
-
-                            # Option 2: Download from internet (fallback)
-                            logger.info(f"[{host}] Downloading DolphinScheduler from internet...")
-                            download_url = config.get('advanced', {}).get('download_url', 
-                                'https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz')
-                            
-                            # Step 2a: Create temp directory (use home dir to avoid tmpfs limits)
-                            execute_remote_command(node_ssh, """
-                            TEMP_DIR="/home/ec2-user/ds_download_$(date +%s)"
-                            mkdir -p $TEMP_DIR
-                            cd $TEMP_DIR
-                            echo "Created temp directory: $TEMP_DIR"
-                            """, timeout=30)
-                            
-                            # Step 2b: Download package
-                            logger.info(f"[{host}] Downloading package (this may take a few minutes)...")
-                            download_cmd = f"""
-                            cd /home/ec2-user/ds_download_*
-                            echo "Starting download from {download_url}..."
-                            
-                            # Try wget first
-                            if wget --progress=dot:giga --timeout=600 --tries=2 "{download_url}" -O apache-dolphinscheduler-3.2.0-bin.tar.gz 2>&1; then
-                                echo "✓ Download completed with wget"
-                            else
-                                echo "wget failed, trying curl..."
-                                if curl -L --connect-timeout 30 --max-time 600 --retry 2 "{download_url}" -o apache-dolphinscheduler-3.2.0-bin.tar.gz; then
-                                    echo "✓ Download completed with curl"
-                                else
-                                    echo "✗ Download failed"
-                                    exit 1
-                                fi
-                            fi
-                            
-                            # Verify download
-                            if [ ! -f apache-dolphinscheduler-3.2.0-bin.tar.gz ] || [ ! -s apache-dolphinscheduler-3.2.0-bin.tar.gz ]; then
-                                echo "✗ Download verification failed"
-                                exit 1
-                            fi
-                            
-                            echo "✓ Download verified, size: $(du -h apache-dolphinscheduler-3.2.0-bin.tar.gz | cut -f1)"
-                            """
-                            execute_remote_command(node_ssh, download_cmd, timeout=700)
-                    
-                    # Step 2c: Extract package
-                    logger.info(f"[{host}] Extracting package...")
-                    extract_cmd = """
-                    cd /home/ec2-user/ds_download_*
-                    echo "Extracting package..."
-                    if tar -xzf apache-dolphinscheduler-3.2.0-bin.tar.gz; then
-                        echo "✓ Package extracted successfully"
-                    else
-                        echo "✗ Extraction failed"
-                        exit 1
-                    fi
-                    """
-                    execute_remote_command(node_ssh, extract_cmd, timeout=120)
-                    
-                    # Step 2d: Install to final location
-                    logger.info(f"[{host}] Installing to final location...")
-                    install_cmd = f"""
-                    cd /home/ec2-user/ds_download_*
-                    echo "Installing to {config['deployment']['install_path']}..."
-                    sudo mkdir -p {config['deployment']['install_path']}
-                    sudo cp -r apache-dolphinscheduler-3.2.0-bin/* {config['deployment']['install_path']}/
-                    sudo chown -R {deploy_user}:{deploy_user} {config['deployment']['install_path']}
-                    
-                    # Clean up
-                    cd /
-                    rm -rf /home/ec2-user/ds_download_*
-                    echo "✓ Installation completed and temp files cleaned"
-                    """
-                    execute_remote_command(node_ssh, install_cmd, timeout=180)
-                
-                # Step 3: Set permissions
-                logger.info(f"[{host}] Setting permissions...")
-                execute_remote_command(node_ssh, f"sudo chown -R {deploy_user}:{deploy_user} {config['deployment']['install_path']}")
-                execute_remote_command(node_ssh, f"sudo chmod +x {config['deployment']['install_path']}/bin/*.sh")
-                
-                # Step 4: Create resource directories
+                # Create resource directories
                 logger.info(f"[{host}] Creating resource directories...")
                 create_resource_directories(node_ssh, config)
                 
-                # Step 5: Upload configuration files
-                logger.info(f"[{host}] Uploading configuration files...")
-                upload_configuration_files(node_ssh, config, config['deployment']['install_path'])
-                
-                # Step 6: Upload common.properties (critical for resource center)
-                # Use hdfs_address from hadoop_config_files if available
-                hdfs_addr = hadoop_config_files.get('hdfs_address') if hadoop_config_files else None
-                logger.info(f"[{host}] Uploading common.properties (HDFS address: {hdfs_addr})...")
-                upload_common_properties(node_ssh, config, config['deployment']['install_path'], hdfs_address_override=hdfs_addr)
-                
-                # Step 6.5: Check and configure storage based on type
-                storage_type = config.get('storage', {}).get('type', 'LOCAL').upper()
-                if storage_type == 'S3':
-                    logger.info(f"[{host}] S3 storage is configured, checking and installing S3 plugin...")
-                    if not check_s3_plugin_installed(node_ssh, config['deployment']['install_path']):
-                        logger.info(f"[{host}] S3 plugin not found, installing...")
-                        install_s3_plugin(node_ssh, config['deployment']['install_path'], deploy_user, config)
-                        configure_s3_storage(node_ssh, config['deployment']['install_path'], deploy_user, config)
-                    else:
-                        logger.info(f"[{host}] S3 plugin already installed")
-                elif storage_type == 'HDFS':
-                    logger.info(f"[{host}] HDFS storage is configured, setting up Hadoop configuration...")
-                    # Upload Hadoop config files (downloaded earlier from EMR master)
-                    if hadoop_config_files:
-                        try:
-                            setup_hadoop_config_on_node(node_ssh, config, host, hadoop_config_files)
-                        except Exception as e:
-                            logger.warning(f"[{host}] Failed to setup Hadoop config: {e}")
-                    else:
-                        logger.warning(f"[{host}] No Hadoop config files available, skipping")
-                    
-                    logger.info(f"[{host}] Checking HDFS connectivity...")
-                    if check_hdfs_connectivity(node_ssh, config):
-                        logger.info(f"[{host}] HDFS is accessible, creating HDFS directories...")
-                        # Create HDFS directories (only once, but safe to call multiple times)
-                        try:
-                            create_hdfs_directories(node_ssh, config)
-                        except Exception as e:
-                            logger.warning(f"[{host}] HDFS directory creation failed (may already exist): {e}")
-                        logger.info(f"[{host}] Configuring HDFS storage...")
-                        configure_hdfs_storage(node_ssh, config['deployment']['install_path'], deploy_user, config)
-                    else:
-                        logger.warning(f"[{host}] HDFS is not accessible, but continuing deployment")
-                else:
-                    logger.info(f"[{host}] LOCAL storage is configured (default)")
-                
-                # Step 7: Install MySQL JDBC driver
+                # Install MySQL JDBC driver
                 logger.info(f"[{host}] Installing MySQL JDBC driver...")
-                install_mysql_jdbc_driver(node_ssh, config['deployment']['install_path'], deploy_user)
+                install_mysql_jdbc_driver(node_ssh, install_path, deploy_user)
                 
-                # Step 8: Configure components
-                logger.info(f"[{host}] Configuring components...")
-                configure_components(node_ssh, config, config['deployment']['install_path'])
+                logger.info(f"[{host}] ✓ Deployment completed")
                 
-                logger.info(f"[{host}] ✓ Deployment completed successfully")
-                return f"✓ Deployed {component} to {host}"
-                
-            except Exception as e:
-                logger.error(f"[{host}] Deployment failed: {e}")
-                raise Exception(f"Failed to deploy {component} to {host}: {e}")
             finally:
                 if node_ssh:
                     node_ssh.close()
         
-        # Deploy to all nodes sequentially (more reliable)
-        logger.info(f"Deploying to {len(all_nodes)} nodes sequentially...")
+        # ============================================================
+        # Step 5: Initialize database (only on first node)
+        # ============================================================
+        logger.info("")
+        logger.info("Step 5: Initializing database schema...")
         
-        for i, node in enumerate(all_nodes):
-            try:
-                result = deploy_to_node(node)
-                logger.info(f"[{i+1}/{len(all_nodes)}] {result}")
-            except Exception as e:
-                logger.error(f"Deployment failed: {e}")
-                raise
+        first_ssh = connect_ssh(first_node, username, key_file, config=config)
+        try:
+            initialize_database(first_ssh, config, install_path)
+        finally:
+            first_ssh.close()
         
-        logger.info("✓ DolphinScheduler 3.2.0 installation completed")
+        # ============================================================
+        # Step 6: Handle storage-specific configuration
+        # ============================================================
+        storage_type = config.get('storage', {}).get('type', 'LOCAL').upper()
         
-        logger.info("✓ DolphinScheduler 3.2.0 deployed successfully")
+        if storage_type == 'HDFS':
+            logger.info("")
+            logger.info("Step 6: Configuring HDFS storage...")
+            
+            # Download Hadoop config from EMR
+            hadoop_config_files = download_hadoop_config_from_emr(config)
+            
+            if hadoop_config_files:
+                # Create HDFS directories
+                logger.info("Creating HDFS directories...")
+                first_ssh = connect_ssh(first_node, username, key_file, config=config)
+                try:
+                    create_hdfs_directories(first_ssh, config)
+                finally:
+                    first_ssh.close()
+                
+                # Setup Hadoop config on all nodes
+                for node in all_nodes:
+                    host = node['host']
+                    logger.info(f"[{host}] Setting up Hadoop configuration...")
+                    node_ssh = connect_ssh(host, username, key_file, config=config)
+                    try:
+                        setup_hadoop_config_on_node(node_ssh, config, host, hadoop_config_files)
+                    finally:
+                        node_ssh.close()
+                
+                # Clean up temp files
+                if 'temp_dir' in hadoop_config_files:
+                    shutil.rmtree(hadoop_config_files['temp_dir'], ignore_errors=True)
+            else:
+                logger.warning("⚠ Failed to download Hadoop config, HDFS may not work correctly")
+        
+        elif storage_type == 'S3':
+            logger.info("")
+            logger.info("Step 6: S3 storage configured (no additional setup needed)")
+        
+        else:
+            logger.info("")
+            logger.info("Step 6: LOCAL storage configured (default)")
+        
+        # ============================================================
+        # Complete
+        # ============================================================
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info(f"✓ DolphinScheduler {version} deployed successfully!")
+        logger.info("=" * 60)
+        logger.info("")
+        logger.info("Next steps:")
+        logger.info("  1. Start services: python cli.py start")
+        logger.info("  2. Check status: python cli.py status")
+        logger.info(f"  3. Access UI: http://<api-server-ip>:12345/dolphinscheduler")
+        logger.info("")
+        
         return True
         
+    except Exception as e:
+        logger.error(f"Deployment failed: {e}")
+        raise
+        
     finally:
-        ssh.close()
+        # Clean up temp directory
+        if temp_dir and os.path.exists(temp_dir):
+            logger.info("Cleaning up temporary files...")
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 # Re-export functions from other modules for backward compatibility

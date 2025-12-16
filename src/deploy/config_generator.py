@@ -9,7 +9,9 @@ logger = setup_logger(__name__)
 
 def generate_application_yaml_v320(config, component='master'):
     """
-    Generate application.yaml for DolphinScheduler 3.2.0 component
+    Generate application.yaml for DolphinScheduler 3.2.x component
+    
+    Supports both 3.2.0 and 3.2.2 versions.
     
     Args:
         config: Configuration dictionary
@@ -21,192 +23,83 @@ def generate_application_yaml_v320(config, component='master'):
     db_config = config['database']
     registry_config = config['registry']
     service_config = config.get('service_config', {}).get(component, {})
+    version = config.get('deployment', {}).get('version', '3.2.0')
     
-    # Build database URL with 3.2.0 compatible parameters
-    db_params = "useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true"
+    # Build database URL
+    db_params = db_config.get('params', 'useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true')
     db_url = f"jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?{db_params}"
     
     # Build Zookeeper connection string
     zk_connect = ','.join(registry_config['servers'])
     
+    # Get registry timeout settings (3.2.2 format)
+    session_timeout = registry_config.get('session_timeout', 30000)
+    connection_timeout = registry_config.get('connection_timeout', 9000)
+    block_until_connected = registry_config.get('block_until_connected', 600)
+    base_sleep_time = registry_config.get('retry', {}).get('base_sleep_time', 60)
+    max_sleep_time = registry_config.get('retry', {}).get('max_sleep_time', 300)
+    max_retries = registry_config.get('retry', {}).get('max_retries', 5)
+    
     # Base configuration for components that need database access
-    if component in ['master', 'api', 'alert']:
+    if component in ['master', 'worker', 'api', 'alert']:
         yaml_content = f"""spring:
   profiles:
     active: mysql
-  banner:
-    charset: UTF-8
-  jackson:
-    time-zone: UTC
-    date-format: "yyyy-MM-dd HH:mm:ss"
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: {db_url}
     username: {db_config['username']}
     password: {db_config['password']}
-    hikari:
-      connection-test-query: select 1
-      pool-name: DolphinScheduler
-      minimum-idle: 5
-      maximum-pool-size: 50
-      auto-commit: true
-      idle-timeout: 600000
-      pool-prepared-statements: true
-      max-prepared-statements-per-connection: 20
-      connection-timeout: 30000
-      connection-init-sql: SELECT 1
-      validation-timeout: 3000
 
-"""
-    else:
-        # Worker doesn't need database configuration in 3.2.0
-        yaml_content = f"""spring:
-  profiles:
-    active: mysql
-  banner:
-    charset: UTF-8
-  jackson:
-    time-zone: UTC
-    date-format: "yyyy-MM-dd HH:mm:ss"
-
-"""
-    
-    # Add registry configuration for all components
-    yaml_content += f"""registry:
+registry:
   type: {registry_config['type']}
   zookeeper:
     namespace: {registry_config.get('namespace', 'dolphinscheduler')}
     connect-string: {zk_connect}
     retry-policy:
-      base-sleep-time: {registry_config.get('retry', {}).get('base_sleep_time', 1000)}ms
-      max-sleep: {registry_config.get('retry', {}).get('max_sleep_time', 3000)}ms
-      max-retries: {registry_config.get('retry', {}).get('max_retries', 5)}
-    session-timeout: {registry_config.get('session_timeout', 60000)}ms
-    connection-timeout: {registry_config.get('connection_timeout', 30000)}ms
+      base-sleep-time: {base_sleep_time}ms
+      max-sleep: {max_sleep_time}ms
+      max-retries: {max_retries}
+    session-timeout: {session_timeout // 1000}s
+    connection-timeout: {connection_timeout // 1000}s
+    block-until-connected: {block_until_connected}ms
 
 """
     
-    # Add resource storage configuration for all components
-    storage_config = config.get('storage', {})
-    storage_type = storage_config.get('type', 'LOCAL').upper()
-    
-    if storage_type == 'S3':
-        yaml_content += f"""# Resource Storage Configuration
-resource-storage:
-  type: S3
-  s3:
-    region: {storage_config.get('region', 'us-east-2')}
-    bucket-name: {storage_config.get('bucket', 'dolphinscheduler')}
-    folder: {storage_config.get('upload_path', '/dolphinscheduler')}
-    access-key-id: {storage_config.get('access_key_id', '')}
-    secret-access-key: {storage_config.get('secret_access_key', '')}
-    endpoint: {storage_config.get('endpoint', f"https://s3.{storage_config.get('region', 'us-east-2')}.amazonaws.com")}
-
-"""
-    elif storage_type == 'HDFS':
-        hdfs_config = storage_config.get('hdfs', {})
-        namenode_host = hdfs_config.get('namenode_host', 'localhost')
-        namenode_port = hdfs_config.get('namenode_port', 8020)
-        hdfs_user = hdfs_config.get('user', 'hadoop')
-        hdfs_path = hdfs_config.get('upload_path', '/dolphinscheduler')
-        
-        yaml_content += f"""# Resource Storage Configuration
-resource-storage:
-  type: HDFS
-  hdfs:
-    fs-default-name: hdfs://{namenode_host}:{namenode_port}
-    resource-upload-path: {hdfs_path}
-    hadoop-security-authentication: simple
-    hadoop.security.authentication: simple
-    hadoop.security.authorization: false
-    hadoop.user.name: {hdfs_user}
-
-"""
-    else:
-        # Default to local storage if not configured
-        yaml_content += f"""# Resource Storage Configuration
-resource-storage:
-  type: LOCAL
-  local:
-    base-dir: /opt/dolphinscheduler/resources
-
-"""
-    
-    # Add component-specific configuration for 3.2.0
+    # Add component-specific configuration
     if component == 'master':
-        max_cpu_load = service_config.get('max_cpu_load_avg', 3)
-        reserved_memory = service_config.get('reserved_memory', 0.1)
-        max_waiting_time = service_config.get('max_waiting_time', '150s')
-        
-        yaml_content += f"""master:
-  listen-port: 5678
-  max-cpu-load-avg: {max_cpu_load}
-  reserved-memory: {reserved_memory}
-  max-waiting-time: {max_waiting_time}
-  heartbeat-interval: 10s
-  task-commit-retry-times: 5
-  task-commit-interval: 1000
-  state-wheel-interval: 5s
-  process-task-cleanup-time: 120s
+        listen_port = service_config.get('listen_port', 5679)  # 3.2.2 default
+        yaml_content += f"""server:
+  port: {listen_port}
 
+metrics:
+  enabled: true
 """
     
     elif component == 'worker':
-        max_cpu_load = service_config.get('max_cpu_load_avg', 3)
-        reserved_memory = service_config.get('reserved_memory', 0.1)
-        max_waiting_time = service_config.get('max_waiting_time', '150s')
-        
-        yaml_content += f"""worker:
-  listen-port: 1234
-  max-cpu-load-avg: {max_cpu_load}
-  reserved-memory: {reserved_memory}
-  max-waiting-time: {max_waiting_time}
-  heartbeat-interval: 10s
-  host-weight: 100
-  tenant-auto-create: true
-  exec-threads: 100
+        listen_port = service_config.get('listen_port', 1235)  # 3.2.2 default
+        yaml_content += f"""server:
+  port: {listen_port}
 
+metrics:
+  enabled: true
 """
     
     elif component == 'api':
         api_port = service_config.get('port', 12345)
         yaml_content += f"""server:
   port: {api_port}
-  servlet:
-    session:
-      timeout: 7200s
-    context-path: /dolphinscheduler
-  compression:
-    enabled: true
-    mime-types: text/html,text/xml,text/plain,text/css,text/javascript,application/javascript,application/json,application/xml
-  jetty:
-    max-http-post-size: 5000000
 
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,metrics,prometheus
-  endpoint:
-    health:
-      enabled: true
-      show-details: always
-  health:
-    db:
-      enabled: true
-    defaults:
-      enabled: false
-
+metrics:
+  enabled: true
 """
     
     elif component == 'alert':
         yaml_content += f"""server:
   port: 50052
 
-alert:
-  port: 50052
-  wait-timeout: 5000
-
+metrics:
+  enabled: true
 """
     
     return yaml_content
@@ -321,7 +214,7 @@ zkRoot="{registry_config.get('namespace', '/dolphinscheduler')}"
 
 def generate_dolphinscheduler_env_v320(config):
     """
-    Generate dolphinscheduler_env.sh for DolphinScheduler 3.2.0
+    Generate dolphinscheduler_env.sh for DolphinScheduler 3.2.x
     
     Args:
         config: Configuration dictionary
@@ -331,9 +224,13 @@ def generate_dolphinscheduler_env_v320(config):
     """
     db_config = config['database']
     registry_config = config['registry']
+    deployment_config = config.get('deployment', {})
     
-    # Build database URL with 3.2.0 compatible parameters
-    db_params = "useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true"
+    # Get Java home - 3.2.2 recommends Java 11
+    java_home = deployment_config.get('java_home', '/usr/lib/jvm/java-11-openjdk-amd64')
+    
+    # Build database URL
+    db_params = db_config.get('params', 'useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true')
     db_url = f"jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?{db_params}"
     
     # Build Zookeeper connection string
@@ -341,51 +238,18 @@ def generate_dolphinscheduler_env_v320(config):
     
     env_content = f"""#!/bin/bash
 #
-# Licensed to the Apache Software Foundation (ASF) under one or more
-# contributor license agreements.  See the NOTICE file distributed with
-# this work for additional information regarding copyright ownership.
-# The ASF licenses this file to You under the Apache License, Version 2.0
-# (the "License"); you may not use this file except in compliance with
-# the License.  You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# DolphinScheduler Environment Configuration
 #
 
-# JAVA_HOME, will use it to start DolphinScheduler server
-export JAVA_HOME=${{JAVA_HOME:-/usr/lib/jvm/java-1.8.0}}
+# JAVA_HOME - DolphinScheduler 3.2.2 recommends Java 11
+export JAVA_HOME={java_home}
 
-# Database related configuration, set database type, username and password
-export DATABASE=${{DATABASE:-mysql}}
-export SPRING_PROFILES_ACTIVE=${{DATABASE}}
+# Database configuration
+export DATABASE=mysql
+export SPRING_PROFILES_ACTIVE=mysql
 export SPRING_DATASOURCE_URL="{db_url}"
 export SPRING_DATASOURCE_USERNAME={db_config['username']}
 export SPRING_DATASOURCE_PASSWORD={db_config['password']}
-
-# DolphinScheduler server related configuration
-export SPRING_CACHE_TYPE=${{SPRING_CACHE_TYPE:-none}}
-export SPRING_JACKSON_TIME_ZONE=${{SPRING_JACKSON_TIME_ZONE:-UTC}}
-export MASTER_FETCH_COMMAND_NUM=${{MASTER_FETCH_COMMAND_NUM:-10}}
-
-# Registry center configuration, determines the type and link of the registry center
-export REGISTRY_TYPE=${{REGISTRY_TYPE:-zookeeper}}
-export REGISTRY_ZOOKEEPER_CONNECT_STRING=${{REGISTRY_ZOOKEEPER_CONNECT_STRING:-{zk_connect}}}
-
-# Tasks related configurations, need to change the configuration if you use the related tasks.
-export HADOOP_HOME=${{HADOOP_HOME:-/opt/soft/hadoop}}
-export HADOOP_CONF_DIR=${{HADOOP_CONF_DIR:-/opt/soft/hadoop/etc/hadoop}}
-export SPARK_HOME=${{SPARK_HOME:-/opt/soft/spark}}
-export PYTHON_LAUNCHER=${{PYTHON_LAUNCHER:-/usr/bin/python}}
-export HIVE_HOME=${{HIVE_HOME:-/opt/soft/hive}}
-export FLINK_HOME=${{FLINK_HOME:-/opt/soft/flink}}
-export DATAX_LAUNCHER=${{DATAX_LAUNCHER:-/opt/soft/datax/bin/datax.py}}
-
-export PATH=$HADOOP_HOME/bin:$SPARK_HOME/bin:$PYTHON_LAUNCHER:$JAVA_HOME/bin:$HIVE_HOME/bin:$FLINK_HOME/bin:$DATAX_LAUNCHER:$PATH
 """
     
     return env_content
@@ -393,10 +257,12 @@ export PATH=$HADOOP_HOME/bin:$SPARK_HOME/bin:$PYTHON_LAUNCHER:$JAVA_HOME/bin:$HI
 
 def generate_common_properties_v320(config):
     """
-    Generate common.properties for DolphinScheduler 3.2.0
+    Generate common.properties for DolphinScheduler 3.2.x
     
-    This file configures resource storage, data source, and other common settings.
-    Critical for resource center functionality.
+    This file configures resource storage. Critical for resource center functionality.
+    Supports S3, HDFS, and LOCAL storage types.
+    
+    Note: For 3.2.2, Azure placeholder values are required even if not using Azure.
     
     Args:
         config: Configuration dictionary
@@ -405,20 +271,44 @@ def generate_common_properties_v320(config):
         Configuration content string
     """
     storage_config = config.get('storage', {})
-    
-    # Determine resource storage type and configuration
     storage_type = storage_config.get('type', 'LOCAL').upper()
+    
+    # Base path configuration
+    properties_content = """# DolphinScheduler Common Properties
+data.basedir.path=/tmp/dolphinscheduler
+
+"""
     
     if storage_type == 'S3':
         # S3 storage configuration
-        resource_storage_config = f"""# Resource Storage Configuration - S3
+        s3_config = storage_config.get('s3', {})
+        azure_config = storage_config.get('azure', {})
+        
+        # Get S3 credentials - must be provided (IAM Role has bugs in DolphinScheduler 3.2.2)
+        use_iam_role = s3_config.get('use_iam_role', False)
+        access_key = s3_config.get('access_key_id', '')
+        secret_key = s3_config.get('secret_access_key', '')
+        
+        # Validate credentials if not using IAM Role
+        if not use_iam_role and (not access_key or not secret_key):
+            logger.warning("S3 storage configured but access_key_id or secret_access_key is missing!")
+            logger.warning("DolphinScheduler 3.2.2 has known issues with IAM Role, AK/SK is required.")
+        
+        properties_content += f"""# Resource Storage Configuration - S3
 resource.storage.type=S3
-resource.aws.region={storage_config.get('region', 'us-east-2')}
-resource.aws.s3.bucket.name={storage_config.get('bucket', 'dolphinscheduler')}
-resource.aws.s3.upload.folder={storage_config.get('upload_path', '/dolphinscheduler')}
-resource.aws.access.key.id={storage_config.get('access_key_id', '')}
-resource.aws.secret.access.key={storage_config.get('secret_access_key', '')}
-resource.aws.s3.endpoint={storage_config.get('endpoint', f"https://s3.{storage_config.get('region', 'us-east-2')}.amazonaws.com")}
+resource.storage.upload.base.path={s3_config.get('upload_path', '/dolphinscheduler')}
+
+resource.aws.access.key.id={access_key}
+resource.aws.secret.access.key={secret_key}
+resource.aws.region={s3_config.get('region', 'us-east-2')}
+resource.aws.s3.bucket.name={s3_config.get('bucket', 'dolphinscheduler')}
+resource.aws.s3.endpoint={s3_config.get('endpoint', f"https://s3.{s3_config.get('region', 'us-east-2')}.amazonaws.com")}
+
+# Azure placeholder configuration (required even if not using Azure)
+resource.azure.client.id={azure_config.get('client_id', 'placeholder')}
+resource.azure.client.secret={azure_config.get('client_secret', 'placeholder')}
+resource.azure.subId={azure_config.get('sub_id', 'placeholder')}
+resource.azure.tenant.id={azure_config.get('tenant_id', 'placeholder')}
 """
     elif storage_type == 'HDFS':
         # HDFS storage configuration
@@ -428,133 +318,17 @@ resource.aws.s3.endpoint={storage_config.get('endpoint', f"https://s3.{storage_c
         hdfs_user = hdfs_config.get('user', 'hadoop')
         hdfs_path = hdfs_config.get('upload_path', '/dolphinscheduler')
         
-        resource_storage_config = f"""# Resource Storage Configuration - HDFS
+        properties_content += f"""# Resource Storage Configuration - HDFS
 resource.storage.type=HDFS
 resource.storage.upload.base.path={hdfs_path}
 resource.hdfs.root.user={hdfs_user}
 resource.hdfs.fs.defaultFS=hdfs://{namenode_host}:{namenode_port}
-resource.hdfs.path.prefix={hdfs_path}
-resource.hdfs.username={hdfs_user}
-resource.hdfs.kerberos.authentication.enable=false
 """
     else:
         # Default to LOCAL storage
-        resource_storage_config = """# Resource Storage Configuration - LOCAL
+        properties_content += """# Resource Storage Configuration - LOCAL
 resource.storage.type=LOCAL
-resource.local.basedir=/tmp/dolphinscheduler
-"""
-    
-    # Build common.properties content
-    properties_content = f"""#
-# Licensed to the Apache Software Foundation (ASF) under one or more
-# contributor license agreements.  See the NOTICE file distributed with
-# this work for additional information regarding copyright ownership.
-# The ASF licenses this file to You under the Apache License, Version 2.0
-# (the "License"); you may not use this file except in compliance with
-# the License.  You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-
-# ============================================================================
-# DolphinScheduler Common Configuration
-# ============================================================================
-
-{resource_storage_config}
-
-# Data source configuration
-datasource.driver.class.name=com.mysql.cj.jdbc.Driver
-datasource.url=jdbc:mysql://{config['database']['host']}:{config['database'].get('port', 3306)}/{config['database']['database']}?useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true
-datasource.username={config['database']['username']}
-datasource.password={config['database']['password']}
-
-# Connection pool configuration
-datasource.hikari.connection-test-query=select 1
-datasource.hikari.pool-name=DolphinScheduler
-datasource.hikari.minimum-idle=5
-datasource.hikari.maximum-pool-size=50
-datasource.hikari.auto-commit=true
-datasource.hikari.idle-timeout=600000
-datasource.hikari.pool-prepared-statements=true
-datasource.hikari.max-prepared-statements-per-connection=20
-datasource.hikari.connection-timeout=30000
-datasource.hikari.validation-timeout=3000
-
-# Cache configuration
-spring.cache.type=none
-
-# Jackson configuration
-spring.jackson.time-zone=UTC
-spring.jackson.date-format=yyyy-MM-dd HH:mm:ss
-
-# Registry center configuration
-registry.type=zookeeper
-registry.zookeeper.namespace={config['registry'].get('namespace', 'dolphinscheduler')}
-registry.zookeeper.connect-string={','.join(config['registry']['servers'])}
-registry.zookeeper.retry-policy.base-sleep-time={config['registry'].get('retry', {}).get('base_sleep_time', 1000)}
-registry.zookeeper.retry-policy.max-sleep={config['registry'].get('retry', {}).get('max_sleep_time', 3000)}
-registry.zookeeper.retry-policy.max-retries={config['registry'].get('retry', {}).get('max_retries', 5)}
-registry.zookeeper.session-timeout={config['registry'].get('session_timeout', 60000)}
-registry.zookeeper.connection-timeout={config['registry'].get('connection_timeout', 30000)}
-
-# Server configuration
-server.port=12345
-server.servlet.context-path=/dolphinscheduler
-
-# Logging configuration
-logging.level.root=INFO
-logging.level.org.apache.dolphinscheduler=INFO
-
-# Task execution configuration
-task.execute.threads=100
-task.dispatch.task.number=3
-task.commit.retry.times=5
-task.commit.interval=1000
-
-# Master configuration
-master.listen.port=5678
-master.exec.threads=100
-master.dispatch.task.number=3
-master.host.selector=LowerWeight
-master.heartbeat.interval=10
-master.task.commit.retry.times=5
-master.task.commit.interval=1000
-master.max.cpu.load.avg=-1
-master.reserved.memory=0.3
-
-# Worker configuration
-worker.listen.port=1234
-worker.exec.threads=100
-worker.heartbeat.interval=10
-worker.max.cpu.load.avg=-1
-worker.reserved.memory=0.3
-worker.exec.path=/tmp/dolphinscheduler/exec
-
-# Alert configuration
-alert.port=50052
-alert.wait.timeout=5000
-
-# Python gateway configuration
-python-gateway.enabled=true
-python-gateway.gateway-server.address=0.0.0.0
-python-gateway.gateway-server.port=25333
-python-gateway.python-path=/usr/bin/python
-
-# File upload configuration
-file.upload.max-size=1073741824
-
-# Tenant configuration
-tenant.auto.create=true
-
-# Other configurations
-server.compression.enabled=true
-server.compression.mime-types=text/html,text/xml,text/plain,text/css,text/javascript,application/javascript,application/json,application/xml
+resource.storage.upload.base.path=/tmp/dolphinscheduler
 """
     
     return properties_content

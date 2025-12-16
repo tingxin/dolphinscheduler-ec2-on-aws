@@ -1,6 +1,6 @@
 # ================================================================================
-# DolphinScheduler 3.2.0 EC2 集群部署配置文件
-# 使用外部 RDS MySQL、Zookeeper 和 S3 存储
+# DolphinScheduler 3.2.2 EC2 集群部署配置文件
+# 使用外部 RDS MySQL、EMR Zookeeper 和 S3 存储
 # ================================================================================
 
 # ================================================================================
@@ -19,79 +19,77 @@ database:
   username: dsadmin  # 必填：数据库用户名
   password: ds123456  # 必填：数据库密码
   database: dolphinscheduler  # 必填：数据库名称
-  params: useUnicode=true&characterEncoding=UTF-8&useSSL=false
+  params: useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true
 
 # ===== 注册中心配置 (Zookeeper) - 必填 =====
+# 使用外部 EMR 集群提供的 Zookeeper 服务
 registry:
   type: zookeeper
-  # 必填：Zookeeper 集群地址
+  # 必填：Zookeeper 集群地址（EMR Master 节点）
   servers:
-    - 172.31.6.163:2181
+    - ec2-3-142-173-229.us-east-2.compute.amazonaws.com:2181
   namespace: dolphinscheduler
-  connection_timeout: 30000
-  session_timeout: 60000
+  connection_timeout: 9000   # 9s
+  session_timeout: 30000     # 30s
+  block_until_connected: 600  # 600ms
   retry:
-    base_sleep_time: 1000
-    max_sleep_time: 3000
+    base_sleep_time: 60      # 60ms
+    max_sleep_time: 300      # 300ms
     max_retries: 5
 
-# ===== 资源存储配置 (LOCAL) - 必填 =====
+# ===== 资源存储配置 (S3) - 必填 =====
 # 用于 DolphinScheduler 资源中心存储上传的文件
 storage:
-  type: HDFS
-  # ===== HDFS 存储配置 =====
-  # 使用 EMR 集群的 HDFS 作为资源存储
-  hdfs:
-    namenode_host: 172.31.6.163  # HDFS NameNode 主机地址（EMR 主节点）
-    namenode_port: 8020  # HDFS NameNode 端口（默认 8020）
-    upload_path: /dolphinscheduler  # HDFS 上的资源存储路径
-    user: hadoop  # HDFS 用户名（通常是 hadoop）
-  
-  # ===== S3 存储配置 - 备用（如需使用 S3 作为资源存储）=====
-  # 如果要使用 S3 作为资源存储，修改 type: S3 并取消下面的注释
-  # type: S3
-  # bucket: tx-mageline-eks  # S3 bucket 名称
-  # region: us-east-2  # S3 区域
-  # upload_path: /dolphinscheduler  # S3 上的资源存储路径
-  # use_iam_role: true  # 推荐使用 IAM Role
-  # access_key_id: ""
-  # secret_access_key: ""
-  # endpoint: https://s3.us-east-2.amazonaws.com
-
-# ===== EMR 集群配置 - 用于 HDFS 操作 =====
-emr:
-  master_host: 172.31.6.163  # EMR 主节点地址
-  master_user: hadoop  # EMR 主节点 SSH 用户名
-  master_key_file: /home/ec2-user/work/dolphinscheduler-ec2-on-aws/ec2-ohio.pem  # EMR 主节点 SSH 密钥文件路径（与 DolphinScheduler 节点使用同一密钥）
-
-# ===== 部署包分发配置 (S3) - 可选 =====
-# 用于加速 DolphinScheduler 部署包的下载和分发
-# 如果不配置，将直接从互联网下载（较慢）
-package_distribution:
-  enabled: true  # 是否启用 S3 包分发
+  type: S3
+  # ===== S3 存储配置 =====
   s3:
     bucket: tx-mageline-eks  # S3 bucket 名称
     region: us-east-2  # S3 区域
-    key: dolphinischeduler-3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz  # S3 中的包路径
-    use_iam_role: true  # 推荐使用 IAM Role
-    # access_key_id: ""  # 仅当 use_iam_role=false 时需要
-    # secret_access_key: ""  # 仅当 use_iam_role=false 时需要
+    upload_path: /dolphinscheduler  # S3 上的资源存储路径
+    endpoint: https://s3.us-east-2.amazonaws.com
+    # 认证方式：使用 AK/SK（IAM Role 在 DolphinScheduler 3.2.2 中有已知 bug）
+    use_iam_role: false
+    # 必填：S3 访问密钥（注意：DolphinScheduler 3.2.2 的 IAM Role 支持有问题，必须使用 AK/SK）
+    access_key_id: "AKIA..."  # 必填：AWS Access Key ID
+    secret_access_key: "..."  # 必填：AWS Secret Access Key
+  
+  # ===== Azure 占位配置（必须配置，否则 CloudServiceImpl 初始化会失败）=====
+  azure:
+    client_id: placeholder
+    client_secret: placeholder
+    sub_id: placeholder
+    tenant_id: placeholder
+
+# ===== EMR 集群配置 - 用于 Zookeeper =====
+emr:
+  master_host: 172.31.6.163  # EMR 主节点地址（Zookeeper 所在节点）
+  master_user: hadoop  # EMR 主节点 SSH 用户名
+  master_key_file: /home/ec2-user/work/dolphinscheduler-ec2-on-aws/ec2-ohio.pem
+
+# ===== 部署包分发配置 (S3) - 可选 =====
+# 用于加速 DolphinScheduler 部署包的下载和分发
+package_distribution:
+  enabled: false  # 建议禁用，直接从互联网下载更可靠
+  s3:
+    bucket: tx-mageline-eks  # S3 bucket 名称
+    region: us-east-2  # S3 区域
+    key: dolphinscheduler-3.2.2/apache-dolphinscheduler-3.2.2-bin.tar.gz  # S3 中的包路径
+    use_iam_role: false  # 不使用 IAM Role（有 bug）
 
 # ===== AWS 基础配置 - 必填 =====
 aws:
   region: us-east-2  # 必填：AWS 区域
   vpc_id: vpc-0c9a0d81e8f5ca012 # 必填：VPC ID
   # 必填：子网配置（支持跨可用区高可用部署）
-  # 建议配置 2-3 个不同可用区的子网
   subnets:
-    - subnet_id: subnet-027700489b00e3c22  # 可用区 A 的子网
+    - subnet_id: subnet-027700489b00e3c22
       availability_zone: us-east-2a
-    - subnet_id: subnet-07589363bd3782beb  # 可用区 B 的子网
+    - subnet_id: subnet-07589363bd3782beb
       availability_zone: us-east-2b
-    - subnet_id: subnet-0f0fee34cbe94fe38  # 可用区 C 的子网（可选）
+    - subnet_id: subnet-0f0fee34cbe94fe38
       availability_zone: us-east-2c
   key_name: ec2-ohio  # 必填：SSH 密钥对名称
-  iam_instance_profile: AdminRole  # 必填（如果 use_iam_role=true）
+  iam_instance_profile: AdminRole  # 可选：IAM 实例配置文件（用于 EC2 管理，不影响 DolphinScheduler S3 访问）
   # 必填：安全组配置
   security_groups:
     master: sg-0b4d077af6fa8c4ee
@@ -100,43 +98,57 @@ aws:
     alert: sg-0b4d077af6fa8c4ee
 
 # ===== 集群节点配置 - 必填 =====
+# selector: 相同 selector 值的组件部署在同一台虚拟机上
+# 例如: master.selector=1, worker.selector=1, api.selector=1 表示这三个组件部署在同一台机器
 cluster:
   # Master 节点配置
   master:
-    count: 2  # 必填：节点数量（建议 2-3 个）
-    instance_type: m7i.xlarge  # 必填：实例类型
-    # 节点列表（创建集群时自动生成，无需手动填写）
-    nodes: []
+    count: 2  # 节点数量
+    instance_type: t3.large
+    nodes:
+      - selector: 1  # 与 selector=1 的其他组件部署在同一台机器
+      - selector: 2
 
   # Worker 节点配置
   worker:
-    count: 2  # 必填：节点数量（根据任务量调整）
-    instance_type: m7i.xlarge  # 必填：实例类型
-    # 节点列表（创建集群时自动生成，无需手动填写）
-    nodes: []
+    count: 3  # 节点数量（根据任务量调整）
+    instance_type: t3.xlarge
+    nodes:
+      - selector: 1  # 与 selector=1 的 master 部署在同一台机器
+        groups:
+          - default
+      - selector: 2
+        groups:
+          - default
+      - selector: 3
+        groups:
+          - default
 
-  # API 节点配置
+  # API 节点配置（高可用：部署在两个节点）
   api:
-    count: 1  # 必填：节点数量（建议 2 个以上）
-    instance_type: m7i.large  # 必填：实例类型
-    # 节点列表（创建集群时自动生成，无需手动填写）
-    nodes: []
+    count: 2  # 节点数量（高可用）
+    instance_type: t3.large
+    nodes:
+      - selector: 1  # 与 selector=1 的 master/worker 部署在同一台机器
+      - selector: 2  # 与 selector=2 的 master/worker 部署在同一台机器
 
   # Alert 节点配置
   alert:
-    count: 1  # 必填：节点数量（通常 1 个即可）
-    instance_type: m7i.large  # 必填：实例类型
-    # 节点列表（创建集群时自动生成，无需手动填写）
-    nodes: []
+    count: 1  # 节点数量（通常 1 个即可）
+    instance_type: t3.large
+    nodes:
+      - selector: 1  # 与 selector=1 的其他组件部署在同一台机器
 
 # ===== 部署配置 - 必填 =====
 deployment:
-  user: dolphinscheduler  # 必填：部署用户（需要 sudo 权限）
-  install_path: /opt/dolphinscheduler  # 必填：安装路径
-  version: 3.2.0  # 必填：DolphinScheduler 版本（推荐使用 3.2.0）
-  skip_system_update: true  # 跳过系统更新以加快部署（推荐）
+  user: dolphinscheduler  # 部署用户（需要 sudo 权限）
+  install_path: /opt/dolphinscheduler  # 安装路径
+  version: 3.2.2  # DolphinScheduler 版本
+  skip_system_update: true  # 跳过系统更新以加快部署
   parallel_init_workers: 10  # 并行初始化的最大线程数
-  download_on_remote: true  # 在目标节点直接下载（推荐，更快）
+  download_on_remote: true  # 在目标节点直接下载
+  # Java 版本配置（3.2.2 推荐 Java 11）
+  java_home: /usr/lib/jvm/java-11-openjdk-amd64
 
 # ================================================================================
 # 【可选配置】以下配置有默认值，可根据需要调整
@@ -145,8 +157,8 @@ deployment:
 # ===== EC2 实例详细配置（可选）=====
 ec2_advanced:
   master:
-    root_volume_size: 100  # 根卷大小（GB）
-    root_volume_type: gp3  # 根卷类型
+    root_volume_size: 100
+    root_volume_type: gp3
     tags:
       Name: dolphinscheduler-master
       Environment: production
@@ -169,7 +181,7 @@ ec2_advanced:
       Component: api
 
   alert:
-    root_volume_size: 100  # 最小 30GB（AMI 快照要求）
+    root_volume_size: 100
     root_volume_type: gp3
     tags:
       Name: dolphinscheduler-alert
@@ -179,7 +191,7 @@ ec2_advanced:
 # ===== 服务配置（可选）=====
 service_config:
   master:
-    listen_port: 5678
+    listen_port: 5679  # 3.2.2 默认端口
     exec_threads: 100
     dispatch_task_number: 3
     host_selector: LowerWeight
@@ -190,7 +202,7 @@ service_config:
     reserved_memory: 0.3
 
   worker:
-    listen_port: 1234
+    listen_port: 1235  # 3.2.2 默认端口
     exec_threads: 100
     heartbeat_interval: 10
     max_cpu_load_avg: -1
@@ -201,15 +213,13 @@ service_config:
     port: 12345
     session_timeout: 7200
     context_path: /dolphinscheduler
-    # 负载均衡器配置（可选）
     load_balancer:
       enabled: true
-      type: application  # application 或 network
-      scheme: internet-facing  # internet-facing 或 internal
-      # ALB 子网（必须是公有子网，且跨多个可用区）
+      type: application
+      scheme: internet-facing
       subnets:
-        - subnet-07589363bd3782beb  # 可用区 A 的公有子网
-        - subnet-027700489b00e3c22  # 可用区 B 的公有子网
+        - subnet-07589363bd3782beb
+        - subnet-027700489b00e3c22
       listener_port: 80
       health_check:
         path: /dolphinscheduler/actuator/health
@@ -254,21 +264,15 @@ jvm:
 
 # ===== 其他配置（可选）=====
 advanced:
-  # 包分发配置 - 优先级从高到低
   # S3 预上传包（最快，推荐）
   s3_package:
     enabled: true
     bucket: tx-mageline-eks
-    key: dolphinischeduler-3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
+    key: dolphinscheduler-3.2.2/apache-dolphinscheduler-3.2.2-bin.tar.gz
     region: us-east-2
   
-  # 下载地址 - DolphinScheduler 3.2.0（备用）
-  # Apache 官方归档（推荐）
-  download_url: https://archive.apache.org/dist/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
-  # 清华镜像（备选，中国访问快）
-  # download_url: https://mirrors.tuna.tsinghua.edu.cn/apache/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
-  # 华为云镜像（备选）
-  # download_url: https://repo.huaweicloud.com/apache/dolphinscheduler/3.2.0/apache-dolphinscheduler-3.2.0-bin.tar.gz
+  # 下载地址 - DolphinScheduler 3.2.2（备用）
+  download_url: https://archive.apache.org/dist/dolphinscheduler/3.2.2/apache-dolphinscheduler-3.2.2-bin.tar.gz
 
   # 日志配置
   logging:
@@ -284,24 +288,52 @@ advanced:
 
   # 监控配置
   monitoring:
-    prometheus_enabled: false
+    prometheus_enabled: true
     prometheus_port: 9090
 
 # ================================================================================
 # 配置说明
 # ================================================================================
-# 1. 【必填配置】必须填写，否则部署会失败
-# 2. 【可选配置】有默认值，可根据实际需求调整
-# 3. 密码和密钥建议使用环境变量，不要硬编码
-# 4. 推荐使用 IAM Role 访问 S3，更安全且无需管理密钥
-# 5. 确保所有节点网络互通，安全组规则正确配置
-# 6. 部署前需要在所有节点创建部署用户并配置 SSH 免密登录
-# 7. RDS MySQL 需要提前创建数据库和用户
-#
-# 【高可用架构建议】
-# 8. 配置 2-3 个不同可用区的子网，实现跨可用区部署
-# 9. Master 节点建议部署在不同可用区（至少 2 个）
-# 10. Worker 节点建议均匀分布在各个可用区
-# 11. API 节点建议部署在不同可用区，配合 ALB 实现高可用
-# 12. RDS MySQL 建议启用 Multi-AZ 部署
-# 13. ALB 必须配置在公有子网，且跨多个可用区
+# 1. 版本：DolphinScheduler 3.2.2，推荐使用 Java 11
+# 2. 存储：使用 S3 作为资源存储，需要配置 Azure 占位值
+# 3. 注册中心：使用外部 EMR 集群提供的 Zookeeper
+# 4. 数据库：使用 RDS MySQL，需要提前创建数据库和用户
+# 5. 端口变化：Master 5679, Worker 1235（与 3.2.0 不同）
+# 6. ⚠️ S3 存储认证问题：
+#    - DolphinScheduler 3.2.2 的 IAM Role 支持有已知 bug
+#    - 必须使用 access_key_id 和 secret_access_key 进行认证
+#    - 不要设置 use_iam_role: true，即使 EC2 有 IAM Role 也不会生效
+#    - 建议创建专门的 IAM 用户，只给 S3 相关权限
+# 7. 确保安全组允许：
+#    - DolphinScheduler 节点之间互通
+#    - DolphinScheduler 节点访问 EMR Zookeeper (2181)
+#    - DolphinScheduler 节点访问 RDS MySQL (3306)
+#    - DolphinScheduler 节点访问 S3 (443)
+
+# ================================================================================
+# S3 存储配置重要说明
+# ================================================================================
+# DolphinScheduler 3.2.2 在 S3 存储方面有以下已知问题：
+# 
+# 1. IAM Role 支持有 bug：
+#    - 即使 EC2 实例配置了正确的 IAM Role
+#    - DolphinScheduler 仍然无法正确使用 IAM Role 访问 S3
+#    - 会出现权限错误或连接失败
+# 
+# 2. 必须使用 AK/SK：
+#    - 必须在 storage.s3.access_key_id 中配置 AWS Access Key ID
+#    - 必须在 storage.s3.secret_access_key 中配置 AWS Secret Access Key
+#    - 设置 storage.s3.use_iam_role: false
+# 
+# 3. 安全建议：
+#    - 创建专门的 IAM 用户用于 DolphinScheduler
+#    - 只给该用户 S3 相关的最小权限
+#    - 定期轮换 Access Key
+#    - 不要在代码中硬编码密钥
+# 
+# 4. 所需 S3 权限：
+#    - s3:GetObject
+#    - s3:PutObject
+#    - s3:DeleteObject
+#    - s3:ListBucket
+# ================================================================================

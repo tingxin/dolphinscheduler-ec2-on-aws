@@ -82,17 +82,22 @@ def validate_config(config):
     elif storage_type == 'S3':
         # S3 storage requires additional S3-specific fields
         s3_bucket = get_nested_value(config, 'storage.bucket')
-        s3_region = get_nested_value(config, 'storage.region')
-        s3_access_key = get_nested_value(config, 'storage.access_key_id')
-        s3_secret_key = get_nested_value(config, 'storage.secret_access_key')
-        s3_use_iam = get_nested_value(config, 'storage.use_iam_role')
+        s3_region = get_nested_value(config, 'storage.s3.region')
+        s3_access_key = get_nested_value(config, 'storage.s3.access_key_id')
+        s3_secret_key = get_nested_value(config, 'storage.s3.secret_access_key')
+        s3_use_iam = get_nested_value(config, 'storage.s3.use_iam_role')
         
         if not s3_bucket:
-            errors.append("Missing required field: storage.bucket (for S3 storage)")
+            errors.append("Missing required field: storage.s3.bucket (for S3 storage)")
         if not s3_region:
-            errors.append("Missing required field: storage.region (for S3 storage)")
-        if not s3_use_iam and (not s3_access_key or not s3_secret_key):
-            errors.append("S3 storage requires either use_iam_role=true or access_key_id/secret_access_key")
+            errors.append("Missing required field: storage.s3.region (for S3 storage)")
+        
+        # DolphinScheduler 3.2.2 has known issues with IAM Role, require AK/SK
+        if s3_use_iam:
+            errors.append("IAM Role is not supported for S3 storage in DolphinScheduler 3.2.2 (known bug). Please use access_key_id/secret_access_key instead.")
+        
+        if not s3_access_key or not s3_secret_key:
+            errors.append("S3 storage requires access_key_id and secret_access_key (IAM Role has known issues in DolphinScheduler 3.2.2)")
     
     # Validate package distribution configuration if enabled
     pkg_dist_enabled = config.get('package_distribution', {}).get('enabled', False)

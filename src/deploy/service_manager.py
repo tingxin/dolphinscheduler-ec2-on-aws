@@ -234,11 +234,13 @@ def start_services(config, username='ec2-user', key_file=None):
         finally:
             ssh.close()
     
-    # Apply HDFS configuration if configured
+    # Apply storage configuration if needed
     storage_type = config.get('storage', {}).get('type', 'LOCAL').upper()
     if storage_type == 'HDFS':
-        logger.info("Applying HDFS configuration to API servers...")
+        logger.info("Applying HDFS configuration to API servers and Workers...")
         apply_hdfs_config_to_api_servers(config, username, key_file)
+    elif storage_type == 'S3':
+        logger.info("S3 storage configured - configuration already applied during deployment")
     
     # Start Alert service
     logger.info("Starting Alert service...")

@@ -1,0 +1,281 @@
+Apache DolphinScheduler 3.2.2 集群部署指南 (三节点版 - MySQL)
+本指南基于官方文档，对3台Ubuntu 24.04 Linux机器的集群环境提供了详细的操作步骤
+
+1. 部署架构规划
+使用三台机器（Node1, Node2, Node3）来构建高可用集群
+IP 地址 (示例)	主机名 (示例)	部署组件
+10.8.1.58	ds-1	Master, Worker, API Server, Alert Server
+10.8.1.199	ds-2	Master, Worker
+10.8.1.55	ds-3	Master, Worker
+
+外部依赖：
+- Zookeeper: 使用 AWS EMR 集群提供 (172.31.6.163:2181)
+- MySQL: 使用 AWS RDS MySQL 实例
+
+重要说明:
+3台机器的安全组要允许互相访问
+
+首先在RDS MySQL实例中创建数据库和用户
+mysql -h dolphin.cluster-xxx.us-west-2.rds.amazonaws.com -u admin -p
+CREATE DATABASE dolphinscheduler DEFAULT CHARACTER SET utf8mb4 DEFAULT COLLATE utf8mb4_unicode_ci;
+CREATE USER 'dolphinscheduler'@'%' IDENTIFIED BY 'your_password';
+GRANT ALL PRIVILEGES ON dolphinscheduler.* TO 'dolphinscheduler'@'%';
+FLUSH PRIVILEGES;
+
+
+2. 创建部署用户
+配置主机名，分开操作
+第一台操作
+echo "ds-1" | sudo tee /etc/hostname
+第二台操作
+echo "ds-2" | sudo tee /etc/hostname
+第三台操作
+echo "ds-3" | sudo tee /etc/hostname
+
+
+创建普通用户dolphinscheduler进行部署
+sudo useradd -m -s /bin/bash dolphinscheduler
+echo "dolphinscheduler:dolphinscheduler" | sudo chpasswd
+echo "dolphinscheduler ALL=(ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers
+
+编辑三台机器的hosts文件
+cat << EOF | sudo tee -a /etc/hosts
+10.8.1.58	  ds-1
+10.8.1.199	ds-2
+10.8.1.55	  ds-3
+EOF
+
+重启系统
+sudo reboot
+
+以下步骤操作使用dolphinscheduler用户
+安装 Java (所有节点)，DolphinScheduler 3.2.2 推荐使用 Java 11 
+sudo apt update
+sudo apt install -y openjdk-11-jdk
+
+设置 JAVA_HOME 环境变量：
+echo 'export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64' | sudo tee -a /etc/profile
+echo 'export PATH=$JAVA_HOME/bin:$PATH' | sudo tee -a /etc/profile
+source /etc/profile
+
+
+3. Zookeeper 配置 (使用外部 EMR Zookeeper)
+
+本部署使用 AWS EMR 集群提供的 Zookeeper 服务，无需单独安装。
+
+前提条件：
+- EMR 集群已创建并运行，包含 Zookeeper 组件
+- EMR Master 节点 IP: 172.31.6.163 (示例)
+- 安全组已配置允许 DolphinScheduler 节点访问 EMR 的 2181 端口
+
+验证 Zookeeper 连接：
+# 从任意 DolphinScheduler 节点测试连接
+telnet 172.31.6.163 2181
+# 输入 ruok，应返回 imok
+
+# 或使用 nc 测试
+echo "ruok" | nc 172.31.6.163 2181
+
+
+4. 安装dolphinscheduler
+sudo mkdir -p /opt/dolphinscheduler
+sudo chown -R dolphinscheduler:dolphinscheduler /opt/dolphinscheduler
+cd /opt/dolphinscheduler
+wget https://archive.apache.org/dist/dolphinscheduler/3.2.2/apache-dolphinscheduler-3.2.2-bin.tar.gz
+tar -zxvf apache-dolphinscheduler-3.2.2-bin.tar.gz
+rm apache-dolphinscheduler-3.2.2-bin.tar.gz
+cd apache-dolphinscheduler-3.2.2-bin
+
+## 下载MySQL JDBC驱动 (所有节点)
+cd /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin
+wget https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar
+cp mysql-connector-j-8.0.33.jar master-server/libs/
+cp mysql-connector-j-8.0.33.jar worker-server/libs/
+cp mysql-connector-j-8.0.33.jar api-server/libs/
+cp mysql-connector-j-8.0.33.jar alert-server/libs/
+cp mysql-connector-j-8.0.33.jar tools/libs/
+
+## 在第一台机器上执行初始化数据库，只需要在ds-1上执行一次
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/tools/bin/upgrade-schema.sh
+
+
+## 修改3台机器的dolphinscheduler配置
+### 全局配置
+cat > /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/env/dolphinscheduler_env.sh << EOF
+export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+
+export DATABASE=mysql
+export SPRING_PROFILES_ACTIVE=mysql
+export SPRING_DATASOURCE_URL="jdbc:mysql://dolphin.cluster-xxx.us-west-2.rds.amazonaws.com:3306/dolphinscheduler?useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true"
+export SPRING_DATASOURCE_USERNAME=dolphinscheduler
+export SPRING_DATASOURCE_PASSWORD=your_password
+EOF
+
+
+### Master应用配置：
+cat > /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/master-server/conf/application.yaml << EOF
+spring:
+  profiles:
+    active: mysql
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://dolphin.cluster-xxx.us-west-2.rds.amazonaws.com:3306/dolphinscheduler?useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true
+    username: dolphinscheduler
+    password: your_password
+
+registry:
+  type: zookeeper
+  zookeeper:
+    namespace: dolphinscheduler
+    connect-string: 172.31.6.163:2181
+    retry-policy:
+      base-sleep-time: 60ms
+      max-sleep: 300ms
+      max-retries: 5
+    session-timeout: 30s
+    connection-timeout: 9s
+    block-until-connected: 600ms
+
+server:
+  port: 5679
+
+metrics:
+  enabled: true
+EOF
+
+
+### Worker应用配置：
+cat > /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/worker-server/conf/application.yaml << EOF
+spring:
+  profiles:
+    active: mysql
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://dolphin.cluster-xxx.us-west-2.rds.amazonaws.com:3306/dolphinscheduler?useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true
+    username: dolphinscheduler
+    password: your_password
+
+registry:
+  type: zookeeper
+  zookeeper:
+    namespace: dolphinscheduler
+    connect-string: 172.31.6.163:2181
+    retry-policy:
+      base-sleep-time: 60ms
+      max-sleep: 300ms
+      max-retries: 5
+    session-timeout: 30s
+    connection-timeout: 9s
+    block-until-connected: 600ms
+
+server:
+  port: 1235
+
+metrics:
+  enabled: true
+EOF
+
+### Api应用配置，保持application.yaml配置不变
+### Alert应用配置，保持application.yaml配置不变
+
+
+### 配置S3存储，配置api和worker的common.properties
+### 注意：即使不使用 Azure，也必须配置 Azure 占位值，否则 CloudServiceImpl 初始化会失败
+### API Server 的 S3 配置
+cat > /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/api-server/conf/common.properties << EOF
+data.basedir.path=/tmp/dolphinscheduler
+
+resource.storage.type=S3
+resource.storage.upload.base.path=/dolphinscheduler
+
+resource.aws.access.key.id=xxxx
+resource.aws.secret.access.key=xxxx
+resource.aws.region=us-west-2
+resource.aws.s3.bucket.name=nwcd-dolphin
+resource.aws.s3.endpoint=https://s3.us-west-2.amazonaws.com
+
+resource.azure.client.id=placeholder
+resource.azure.client.secret=placeholder
+resource.azure.subId=placeholder
+resource.azure.tenant.id=placeholder
+EOF
+
+### Worker Server 的 S3 配置
+cat > /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/worker-server/conf/common.properties << EOF
+data.basedir.path=/tmp/dolphinscheduler
+
+resource.storage.type=S3
+resource.storage.upload.base.path=/dolphinscheduler
+
+resource.aws.access.key.id=xxxx
+resource.aws.secret.access.key=xxxx
+resource.aws.region=us-west-2
+resource.aws.s3.bucket.name=nwcd-dolphin
+resource.aws.s3.endpoint=https://s3.us-west-2.amazonaws.com
+
+resource.azure.client.id=placeholder
+resource.azure.client.secret=placeholder
+resource.azure.subId=placeholder
+resource.azure.tenant.id=placeholder
+EOF
+
+
+### dolphinscheduler的4个组件脚本
+开启4个组件脚本
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh start master-server
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh start worker-server
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh start api-server
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh start alert-server
+
+关闭4个组件脚本
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh stop master-server
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh stop worker-server
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh stop api-server
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh stop alert-server
+
+查看4个组件状态脚本
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh status master-server
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh status worker-server
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh status api-server
+bash /opt/dolphinscheduler/apache-dolphinscheduler-3.2.2-bin/bin/dolphinscheduler-daemon.sh status alert-server
+
+
+节点ds-1，启动4个服务
+节点ds-2，启动master和worker
+节点ds-3，启动master和worker
+
+
+UI的路径
+http://ds-1-public-ip:12345/dolphinscheduler/ui 即可登录系统 UI
+默认的用户名和密码是 
+admin
+dolphinscheduler123
+
+
+===========================================
+MySQL 与 PostgreSQL 的主要区别
+===========================================
+
+1. 数据库创建语句不同：
+   PostgreSQL: CREATE DATABASE dolphinscheduler;
+   MySQL: CREATE DATABASE dolphinscheduler DEFAULT CHARACTER SET utf8mb4 DEFAULT COLLATE utf8mb4_unicode_ci;
+
+2. JDBC驱动不同：
+   PostgreSQL: 内置，无需额外下载
+   MySQL: 需要下载 mysql-connector-j-8.0.33.jar 并复制到各组件的 libs 目录
+
+3. 驱动类名不同：
+   PostgreSQL: org.postgresql.Driver
+   MySQL: com.mysql.cj.jdbc.Driver
+
+4. JDBC URL格式不同：
+   PostgreSQL: jdbc:postgresql://host:5432/database
+   MySQL: jdbc:mysql://host:3306/database?useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true
+
+5. 环境变量配置不同：
+   PostgreSQL: DATABASE=postgresql, SPRING_PROFILES_ACTIVE=postgresql
+   MySQL: DATABASE=mysql, SPRING_PROFILES_ACTIVE=mysql
+
+6. 默认端口不同：
+   PostgreSQL: 5432
+   MySQL: 3306
