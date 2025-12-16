@@ -336,15 +336,31 @@ def validate_s3_access(storage_config):
     Returns:
         True if valid
     """
-    s3 = boto3.client('s3', region_name=storage_config['region'])
-    bucket = storage_config['bucket']
+    s3_config = storage_config.get('s3', {})
+    region = s3_config.get('region')
+    bucket = s3_config.get('bucket')
+    access_key = s3_config.get('access_key_id')
+    secret_key = s3_config.get('secret_access_key')
+    
+    if not region or not bucket:
+        raise ValueError("S3 region and bucket must be configured")
+    
+    # Create S3 client with credentials if provided
+    if access_key and secret_key:
+        s3 = boto3.client('s3', 
+                         region_name=region,
+                         aws_access_key_id=access_key,
+                         aws_secret_access_key=secret_key)
+    else:
+        s3 = boto3.client('s3', region_name=region)
     
     try:
         # Test list objects
         s3.list_objects_v2(Bucket=bucket, MaxKeys=1)
         
         # Test write permission
-        test_key = f"{storage_config.get('upload_path', '/dolphinscheduler')}/test.txt"
+        upload_path = s3_config.get('upload_path', '/dolphinscheduler')
+        test_key = f"{upload_path.lstrip('/')}/test.txt"
         s3.put_object(Bucket=bucket, Key=test_key, Body=b'test')
         s3.delete_object(Bucket=bucket, Key=test_key)
         
