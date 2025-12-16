@@ -738,13 +738,13 @@ def download_package_to_local(config):
     for path in search_paths:
         if os.path.exists(path):
             file_size = os.path.getsize(path)
-            if file_size > 800 * 1024 * 1024:  # Should be around 859MB
+            if file_size > 300 * 1024 * 1024:  # DolphinScheduler 3.2.2 is around 380MB
                 logger.info(f"✓ Found existing package at: {path} ({file_size // 1024 // 1024}MB)")
                 # Copy to temp dir
                 shutil.copy2(path, local_package_path)
                 return {'package_path': local_package_path, 'temp_dir': local_temp_dir}
             else:
-                logger.warning(f"Found package at {path} but size is wrong ({file_size} bytes)")
+                logger.warning(f"Found package at {path} but size is wrong ({file_size} bytes, expected > 300MB)")
     
     # Download from internet
     download_url = config.get('advanced', {}).get('download_url', 
@@ -779,8 +779,9 @@ def download_package_to_local(config):
             raise Exception("Download completed but file not found")
         
         file_size = os.path.getsize(local_package_path)
-        if file_size < 800 * 1024 * 1024:
-            raise Exception(f"Downloaded file too small: {file_size} bytes")
+        # DolphinScheduler 3.2.2 is around 380MB, set minimum to 300MB
+        if file_size < 300 * 1024 * 1024:
+            raise Exception(f"Downloaded file too small: {file_size} bytes (expected > 300MB)")
         
         logger.info(f"✓ Package downloaded successfully: {local_package_path} ({file_size // 1024 // 1024}MB)")
         return {'package_path': local_package_path, 'temp_dir': local_temp_dir}
