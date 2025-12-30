@@ -9,35 +9,44 @@ from src.utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 
-def get_ami_id(region, os_type='al2023'):
+def get_ami_id(region, os_type='ubuntu'):
     """
-    Get Amazon Linux 2023 AMI ID
+    Get Ubuntu 24.04 AMI ID (as per manual.txt)
     
     Args:
         region: AWS region
-        os_type: OS type (al2023, ubuntu, etc.)
+        os_type: OS type (ubuntu, al2023, etc.)
     
     Returns:
         AMI ID
     """
-    if os_type == 'al2023':
-        # Use specific AMI ID for Amazon Linux 2023
-        ami_id = 'ami-058a8a5ab36292159'
-        ami_name = 'al2023-ami-2023.7.20250428.1-kernel-6.1-x86_64'
+    ec2 = boto3.client('ec2', region_name=region)
+    
+    if os_type == 'ubuntu':
+        # Ubuntu 24.04 LTS (as per manual.txt)
+        filters = [
+            {'Name': 'name', 'Values': ['ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*']},
+            {'Name': 'state', 'Values': ['available']},
+            {'Name': 'architecture', 'Values': ['x86_64']}
+        ]
         
-        # Verify AMI exists in the region
-        ec2 = boto3.client('ec2', region_name=region)
-        try:
-            response = ec2.describe_images(ImageIds=[ami_id])
-            if response['Images']:
-                logger.info(f"Selected AMI: {ami_id} ({ami_name})")
-                return ami_id
-            else:
-                logger.warning(f"Specified AMI {ami_id} not found, falling back to latest")
-        except Exception as e:
-            logger.warning(f"Error verifying AMI {ami_id}: {e}, falling back to latest")
+        response = ec2.describe_images(
+            Owners=['099720109477'],  # Canonical
+            Filters=filters
+        )
         
-        # Fallback to latest AMI if specified one is not available
+        if not response['Images']:
+            raise ValueError(f"No Ubuntu 24.04 AMI found in region {region}")
+        
+        # Sort by creation date and get latest
+        images = sorted(response['Images'], key=lambda x: x['CreationDate'], reverse=True)
+        ami_id = images[0]['ImageId']
+        
+        logger.info(f"Selected Ubuntu 24.04 AMI: {ami_id} ({images[0]['Name']})")
+        return ami_id
+    
+    elif os_type == 'al2023':
+        # Amazon Linux 2023 (fallback)
         filters = [
             {'Name': 'name', 'Values': ['al2023-ami-*-x86_64']},
             {'Name': 'state', 'Values': ['available']},
@@ -52,12 +61,11 @@ def get_ami_id(region, os_type='al2023'):
         if not response['Images']:
             raise ValueError(f"No AMI found for {os_type}")
         
-        # Sort by creation date and get latest
         images = sorted(response['Images'], key=lambda x: x['CreationDate'], reverse=True)
-        fallback_ami_id = images[0]['ImageId']
+        ami_id = images[0]['ImageId']
         
-        logger.info(f"Selected fallback AMI: {fallback_ami_id} ({images[0]['Name']})")
-        return fallback_ami_id
+        logger.info(f"Selected Amazon Linux 2023 AMI: {ami_id} ({images[0]['Name']})")
+        return ami_id
     else:
         raise ValueError(f"Unsupported OS type: {os_type}")
 

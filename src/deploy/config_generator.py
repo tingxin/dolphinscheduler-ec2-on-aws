@@ -243,6 +243,7 @@ def generate_dolphinscheduler_env_v320(config):
     deployment_config = config.get('deployment', {})
     
     # Get Java home - 3.2.2 recommends Java 11
+    # Ubuntu 24.04 path as per manual.txt
     java_home = deployment_config.get('java_home', '/usr/lib/jvm/java-11-openjdk-amd64')
     
     # Build database URL based on database type

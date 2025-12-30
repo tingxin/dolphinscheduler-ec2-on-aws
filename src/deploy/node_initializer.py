@@ -12,7 +12,7 @@ from src.utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 
-def initialize_node(host, username='ec2-user', key_file=None, config=None):
+def initialize_node(host, username='ubuntu', key_file=None, config=None):
     """
     Initialize EC2 node with required dependencies and resource directories
     
@@ -39,90 +39,49 @@ def initialize_node(host, username='ec2-user', key_file=None, config=None):
         logger.debug(f"Installing system dependencies on {host}...")
         
         if is_amazon_linux:
+            # Amazon Linux - fallback support
             install_script = """
-            # Skip system update for faster deployment
-            # sudo dnf update -y
+            echo "Installing dependencies on Amazon Linux..."
             
-            # Install Java with proper error handling
-            echo "Installing Java on Amazon Linux 2023..."
-            
-            # Try different Java versions in order of preference
-            JAVA_INSTALLED=false
-            
-            # Try Java 8 first (most compatible with DolphinScheduler)
-            if sudo dnf install -y java-1.8.0-amazon-corretto java-1.8.0-amazon-corretto-devel 2>/dev/null; then
-                echo "✓ Java 8 (Amazon Corretto) installed successfully"
-                JAVA_INSTALLED=true
-            elif sudo dnf install -y java-8-amazon-corretto java-8-amazon-corretto-devel 2>/dev/null; then
-                echo "✓ Java 8 (Amazon Corretto alternative) installed successfully"
-                JAVA_INSTALLED=true
-            # Try Java 11 as fallback
-            elif sudo dnf install -y java-11-amazon-corretto java-11-amazon-corretto-devel 2>/dev/null; then
-                echo "✓ Java 11 (Amazon Corretto) installed successfully"
-                JAVA_INSTALLED=true
-            # Try Java 17 as last resort
-            elif sudo dnf install -y java-17-amazon-corretto java-17-amazon-corretto-devel 2>/dev/null; then
-                echo "✓ Java 17 (Amazon Corretto) installed successfully"
-                JAVA_INSTALLED=true
-            # Try OpenJDK as final fallback
-            elif sudo dnf install -y java-1.8.0-openjdk java-1.8.0-openjdk-devel 2>/dev/null; then
-                echo "✓ OpenJDK 8 installed successfully"
-                JAVA_INSTALLED=true
+            # Install Java 11
+            if sudo dnf install -y java-11-amazon-corretto java-11-amazon-corretto-devel 2>/dev/null; then
+                echo "✓ Java 11 (Amazon Corretto) installed"
+            elif sudo dnf install -y java-11-openjdk java-11-openjdk-devel 2>/dev/null; then
+                echo "✓ Java 11 (OpenJDK) installed"
             else
-                echo "✗ Failed to install Java with dnf, trying alternatives..."
-                # Try with yum as fallback (some AMIs might have yum)
-                if command -v yum >/dev/null 2>&1; then
-                    if sudo yum install -y java-1.8.0-amazon-corretto java-1.8.0-amazon-corretto-devel; then
-                        echo "✓ Java 8 installed with yum"
-                        JAVA_INSTALLED=true
-                    fi
-                fi
-            fi
-            
-            # Verify Java installation
-            if [ "$JAVA_INSTALLED" = "true" ]; then
-                echo "Verifying Java installation..."
-                java -version 2>&1 | head -3
-                which java
-                echo "JAVA_HOME candidates:"
-                ls -la /usr/lib/jvm/ 2>/dev/null || echo "No /usr/lib/jvm directory"
-            else
-                echo "✗ CRITICAL: Java installation failed completely"
+                echo "✗ Failed to install Java 11"
                 exit 1
             fi
             
             # Install other packages
-            echo "Installing other dependencies..."
-            sudo dnf install -y --skip-broken \
-                mysql \
-                psmisc tar gzip wget curl nc \
-                python3 python3-pip \
-                sudo procps-ng
+            sudo dnf install -y --skip-broken mysql psmisc tar gzip wget curl nc python3 python3-pip sudo procps-ng
             
-            # If mysql package not available, try mariadb as fallback
+            # MariaDB fallback
             if ! command -v mysql >/dev/null 2>&1; then
-                echo "MySQL not found, installing MariaDB as fallback..."
                 sudo dnf install -y mariadb105
-                # Create mysql symlink for compatibility
-                if [ -f /usr/bin/mariadb ] && [ ! -f /usr/bin/mysql ]; then
-                    sudo ln -sf /usr/bin/mariadb /usr/bin/mysql
-                fi
+                [ -f /usr/bin/mariadb ] && [ ! -f /usr/bin/mysql ] && sudo ln -sf /usr/bin/mariadb /usr/bin/mysql
             fi
             
-            # Verify MySQL client
-            mysql --version 2>&1 | head -1
+            java -version 2>&1 | head -1
             """
         elif is_ubuntu:
+            # Ubuntu 24.04 - as per manual.txt
             install_script = """
-            # Update package list (required for Ubuntu)
-            sudo apt-get update -qq
+            # Update package list (as per manual.txt)
+            sudo apt update
             
-            # Install all packages in one command (faster)
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-                openjdk-8-jdk \
-                mysql-client \
-                psmisc tar gzip wget curl netcat \
-                python3 python3-pip
+            # Install Java 11 (DolphinScheduler 3.2.2 recommends Java 11, as per manual.txt)
+            sudo apt install -y openjdk-11-jdk
+            
+            # Set JAVA_HOME environment variable (as per manual.txt)
+            echo 'export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64' | sudo tee -a /etc/profile
+            echo 'export PATH=$JAVA_HOME/bin:$PATH' | sudo tee -a /etc/profile
+            
+            # Install MySQL client
+            sudo DEBIAN_FRONTEND=noninteractive apt install -y mysql-client
+            
+            # Install other utilities
+            sudo apt install -y psmisc tar gzip wget curl netcat-openbsd python3 python3-pip
             
             # Verify installations
             java -version 2>&1 | head -1
@@ -164,7 +123,7 @@ def initialize_node(host, username='ec2-user', key_file=None, config=None):
         ssh.close()
 
 
-def create_deployment_user(host, username='ec2-user', deploy_user='dolphinscheduler', key_file=None, config=None):
+def create_deployment_user(host, username='ubuntu', deploy_user='dolphinscheduler', key_file=None, config=None):
     """
     Create deployment user on node
     
@@ -196,13 +155,8 @@ def create_deployment_user(host, username='ec2-user', deploy_user='dolphinschedu
         
         # Create user
         create_user_script = f"""
-        # Create user with home directory
+        # Create user
         sudo useradd -m -s /bin/bash {deploy_user}
-        
-        # Ensure home directory exists and has correct ownership
-        sudo mkdir -p /home/{deploy_user}
-        sudo chown {deploy_user}:{deploy_user} /home/{deploy_user}
-        sudo chmod 755 /home/{deploy_user}
         
         # Add to sudoers with proper permissions
         echo "{deploy_user} ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/{deploy_user}
@@ -224,13 +178,13 @@ def create_deployment_user(host, username='ec2-user', deploy_user='dolphinschedu
         ssh.close()
 
 
-def setup_ssh_keys(nodes, username='ec2-user', key_file=None, config=None):
+def setup_ssh_keys(nodes, username='ubuntu', key_file=None, config=None):
     """
     Setup SSH key-based authentication between nodes for dolphinscheduler user
     
     Args:
         nodes: List of node dictionaries
-        username: SSH username (ec2-user)
+        username: SSH username (ubuntu for Ubuntu AMI)
         key_file: SSH key file path
         config: Configuration dictionary
     
@@ -248,12 +202,6 @@ def setup_ssh_keys(nodes, username='ec2-user', key_file=None, config=None):
     try:
         # Generate key for dolphinscheduler user if not exists (without randomart to avoid parsing issues)
         generate_key_script = f"""
-        # Ensure user home directory exists with correct ownership
-        sudo mkdir -p /home/{deploy_user}
-        sudo chown {deploy_user}:{deploy_user} /home/{deploy_user}
-        sudo chmod 755 /home/{deploy_user}
-        
-        # Create SSH directory and generate key as the user
         sudo -u {deploy_user} bash -c '
             mkdir -p /home/{deploy_user}/.ssh
             chmod 700 /home/{deploy_user}/.ssh
@@ -301,12 +249,6 @@ def setup_ssh_keys(nodes, username='ec2-user', key_file=None, config=None):
         try:
             # Create SSH directory first
             setup_ssh_dir_script = f"""
-            # Ensure user home directory exists with correct ownership
-            sudo mkdir -p /home/{deploy_user}
-            sudo chown {deploy_user}:{deploy_user} /home/{deploy_user}
-            sudo chmod 755 /home/{deploy_user}
-            
-            # Create SSH directory as the user
             sudo -u {deploy_user} bash -c '
                 mkdir -p /home/{deploy_user}/.ssh
                 chmod 700 /home/{deploy_user}/.ssh
@@ -377,7 +319,7 @@ def setup_ssh_keys(nodes, username='ec2-user', key_file=None, config=None):
     return True
 
 
-def configure_hosts_file(nodes, username='ec2-user', key_file=None, config=None):
+def configure_hosts_file(nodes, username='ubuntu', key_file=None, config=None):
     """
     Configure /etc/hosts on all nodes
     

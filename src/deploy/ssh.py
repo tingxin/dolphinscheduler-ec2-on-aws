@@ -78,13 +78,13 @@ def get_ssh_key_path(config=None):
     raise FileNotFoundError(error_msg)
 
 
-def connect_ssh(host, username='ec2-user', key_file=None, port=22, config=None):
+def connect_ssh(host, username='ubuntu', key_file=None, port=22, config=None):
     """
     Create SSH connection
     
     Args:
         host: Host address
-        username: SSH username
+        username: SSH username (default: ubuntu for Ubuntu AMI)
         key_file: Path to SSH key file
         port: SSH port
         config: Configuration dictionary (for key path resolution)
@@ -92,6 +92,10 @@ def connect_ssh(host, username='ec2-user', key_file=None, port=22, config=None):
     Returns:
         SSH client
     """
+    # Get SSH username from config if available
+    if config:
+        username = config.get('aws', {}).get('ssh_user', username)
+    
     if key_file is None:
         key_file = get_ssh_key_path(config)
     
@@ -138,7 +142,7 @@ def connect_ssh(host, username='ec2-user', key_file=None, port=22, config=None):
         raise Exception(f"SSH connection failed to {host}: {str(e)}")
 
 
-def wait_for_ssh(host, username='ec2-user', key_file=None, max_retries=30, retry_interval=10, config=None):
+def wait_for_ssh(host, username='ubuntu', key_file=None, max_retries=30, retry_interval=10, config=None):
     """
     Wait for SSH service to be available
     

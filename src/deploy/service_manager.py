@@ -9,7 +9,7 @@ from src.deploy.installer import download_hadoop_config_from_emr, setup_hadoop_c
 logger = setup_logger(__name__)
 
 
-def apply_hdfs_config_to_api_servers(config, username='ec2-user', key_file=None):
+def apply_hdfs_config_to_api_servers(config, username='ubuntu', key_file=None):
     """
     Apply HDFS configuration to API servers and Worker nodes after initial startup
     
@@ -164,7 +164,7 @@ def apply_hdfs_config_to_api_servers(config, username='ec2-user', key_file=None)
     return True
 
 
-def start_services(config, username='ec2-user', key_file=None):
+def start_services(config, username='ubuntu', key_file=None):
     """
     Start DolphinScheduler services on all nodes
     
@@ -261,7 +261,7 @@ def start_services(config, username='ec2-user', key_file=None):
     return True
 
 
-def stop_services(config, username='ec2-user', key_file=None):
+def stop_services(config, username='ubuntu', key_file=None):
     """
     Stop DolphinScheduler services on all nodes
     
@@ -330,7 +330,7 @@ def stop_services(config, username='ec2-user', key_file=None):
     return True
 
 
-def check_service_status(config, username='ec2-user', key_file=None):
+def check_service_status(config, username='ubuntu', key_file=None):
     """
     Check status of all services
     
@@ -438,7 +438,7 @@ def check_service_status(config, username='ec2-user', key_file=None):
     return status
 
 
-def restart_service(config, component, node_host, username='ec2-user', key_file=None):
+def restart_service(config, component, node_host, username='ubuntu', key_file=None):
     """
     Restart a specific service on a specific node
     
@@ -480,7 +480,7 @@ def restart_service(config, component, node_host, username='ec2-user', key_file=
         ssh.close()
 
 
-def rolling_restart_component(config, component, username='ec2-user', key_file=None):
+def rolling_restart_component(config, component, username='ubuntu', key_file=None):
     """
     Perform rolling restart of a component
     

@@ -1013,7 +1013,7 @@ def distribute_to_node(node_ssh, host, tarball_path, config, deploy_user, versio
     return True
 
 
-def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user', key_file=None):
+def deploy_dolphinscheduler_v320(config, package_file=None, username='ubuntu', key_file=None):
     """
     Deploy DolphinScheduler 3.2.x to all nodes
     
