@@ -196,8 +196,13 @@ def create_deployment_user(host, username='ec2-user', deploy_user='dolphinschedu
         
         # Create user
         create_user_script = f"""
-        # Create user
+        # Create user with home directory
         sudo useradd -m -s /bin/bash {deploy_user}
+        
+        # Ensure home directory exists and has correct ownership
+        sudo mkdir -p /home/{deploy_user}
+        sudo chown {deploy_user}:{deploy_user} /home/{deploy_user}
+        sudo chmod 755 /home/{deploy_user}
         
         # Add to sudoers with proper permissions
         echo "{deploy_user} ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/{deploy_user}
@@ -243,6 +248,12 @@ def setup_ssh_keys(nodes, username='ec2-user', key_file=None, config=None):
     try:
         # Generate key for dolphinscheduler user if not exists (without randomart to avoid parsing issues)
         generate_key_script = f"""
+        # Ensure user home directory exists with correct ownership
+        sudo mkdir -p /home/{deploy_user}
+        sudo chown {deploy_user}:{deploy_user} /home/{deploy_user}
+        sudo chmod 755 /home/{deploy_user}
+        
+        # Create SSH directory and generate key as the user
         sudo -u {deploy_user} bash -c '
             mkdir -p /home/{deploy_user}/.ssh
             chmod 700 /home/{deploy_user}/.ssh
@@ -290,6 +301,12 @@ def setup_ssh_keys(nodes, username='ec2-user', key_file=None, config=None):
         try:
             # Create SSH directory first
             setup_ssh_dir_script = f"""
+            # Ensure user home directory exists with correct ownership
+            sudo mkdir -p /home/{deploy_user}
+            sudo chown {deploy_user}:{deploy_user} /home/{deploy_user}
+            sudo chmod 755 /home/{deploy_user}
+            
+            # Create SSH directory as the user
             sudo -u {deploy_user} bash -c '
                 mkdir -p /home/{deploy_user}/.ssh
                 chmod 700 /home/{deploy_user}/.ssh
