@@ -285,9 +285,10 @@ def execute_script(ssh, script_content, sudo=False):
         Script output
     """
     import random
+    import time as time_module
     
     # Upload script to temp file with unique name
-    temp_script = f"/tmp/script_{int(time.time())}_{random.randint(10000, 99999)}.sh"
+    temp_script = f"/tmp/script_{int(time_module.time())}_{random.randint(10000, 99999)}.sh"
     
     try:
         sftp = ssh.open_sftp()
@@ -297,12 +298,18 @@ def execute_script(ssh, script_content, sudo=False):
     except Exception as e:
         raise Exception(f"Failed to upload script to {temp_script}: {e}")
     
-    # Make executable
-    execute_remote_command(ssh, f"chmod +x {temp_script}")
+    # Make executable and sync to avoid "Text file busy" error
+    execute_remote_command(ssh, f"chmod +x {temp_script} && sync")
     
-    # Execute
+    # Small delay to ensure file is ready
+    time_module.sleep(0.2)
+    
+    # Execute using bash explicitly to avoid "Text file busy"
     try:
-        output = execute_remote_command(ssh, temp_script, sudo=sudo)
+        if sudo:
+            output = execute_remote_command(ssh, f"sudo bash {temp_script}")
+        else:
+            output = execute_remote_command(ssh, f"bash {temp_script}")
         return output
     finally:
         # Cleanup
