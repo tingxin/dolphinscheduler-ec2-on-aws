@@ -284,13 +284,18 @@ def execute_script(ssh, script_content, sudo=False):
     Returns:
         Script output
     """
-    # Upload script to temp file
-    temp_script = f"/tmp/script_{int(time.time())}.sh"
+    import random
     
-    sftp = ssh.open_sftp()
-    with sftp.file(temp_script, 'w') as f:
-        f.write(script_content)
-    sftp.close()
+    # Upload script to temp file with unique name
+    temp_script = f"/tmp/script_{int(time.time())}_{random.randint(10000, 99999)}.sh"
+    
+    try:
+        sftp = ssh.open_sftp()
+        with sftp.file(temp_script, 'w') as f:
+            f.write(script_content)
+        sftp.close()
+    except Exception as e:
+        raise Exception(f"Failed to upload script to {temp_script}: {e}")
     
     # Make executable
     execute_remote_command(ssh, f"chmod +x {temp_script}")
@@ -301,4 +306,7 @@ def execute_script(ssh, script_content, sudo=False):
         return output
     finally:
         # Cleanup
-        execute_remote_command(ssh, f"rm -f {temp_script}")
+        try:
+            execute_remote_command(ssh, f"rm -f {temp_script}")
+        except:
+            pass  # Ignore cleanup errors
