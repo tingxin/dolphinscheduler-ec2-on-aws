@@ -186,7 +186,7 @@ def start_services(config, username='ec2-user', key_file=None):
     for i, node in enumerate(config['cluster']['master']['nodes']):
         ssh = connect_ssh(node['host'], username, key_file, config=config)
         try:
-            # For 3.2.0, use dolphinscheduler-daemon.sh from main bin directory
+            # For 3.2.x, use dolphinscheduler-daemon.sh from main bin directory
             start_cmd = f"cd {install_path} && sudo -u {deploy_user} bash bin/dolphinscheduler-daemon.sh start master-server"
             output = execute_remote_command(ssh, start_cmd)
             logger.debug(f"Master start output: {output}")

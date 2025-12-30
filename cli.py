@@ -54,8 +54,14 @@ def create(config, dry_run, verbose):
     1. Validate configuration
     2. Create EC2 instances
     3. Initialize nodes
-    4. Deploy DolphinScheduler
+    4. Deploy DolphinScheduler (with fixes for file upload functionality)
     5. Start services
+    
+    Recent fixes applied:
+    - common.properties only created in api-server and worker-server (matching manual.txt)
+    - MySQL JDBC driver permissions set to 777 (matching manual.txt)
+    - plugins_config file created in root conf directory for S3 storage
+    - MySQL driver version 8.0.16 prioritized (matching manual.txt)
     """
     try:
         click.echo("=" * 70)

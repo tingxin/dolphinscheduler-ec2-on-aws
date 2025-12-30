@@ -1,6 +1,6 @@
 """
 DolphinScheduler 3.2.x installation and deployment (Simplified)
-Supports 3.2.0, 3.2.2 and other 3.2.x versions
+Supports 3.2.2 and other 3.2.x versions
 """
 import os
 import time
@@ -738,7 +738,7 @@ def download_package_to_local(config):
     for path in search_paths:
         if os.path.exists(path):
             file_size = os.path.getsize(path)
-            if file_size > 300 * 1024 * 1024:  # DolphinScheduler 3.2.2 is around 380MB
+            if file_size > 300 * 1024 * 1024:  # DolphinScheduler packages are typically > 300MB
                 logger.info(f"✓ Found existing package at: {path} ({file_size // 1024 // 1024}MB)")
                 # Copy to temp dir
                 shutil.copy2(path, local_package_path)
@@ -779,7 +779,7 @@ def download_package_to_local(config):
             raise Exception("Download completed but file not found")
         
         file_size = os.path.getsize(local_package_path)
-        # DolphinScheduler 3.2.2 is around 380MB, set minimum to 300MB
+        # DolphinScheduler packages are typically > 300MB
         if file_size < 300 * 1024 * 1024:
             raise Exception(f"Downloaded file too small: {file_size} bytes (expected > 300MB)")
         
@@ -880,19 +880,41 @@ def extract_and_configure_local(config, package_info):
     # Generate common.properties for S3/HDFS storage
     common_props_content = generate_common_properties_v320(config)
     
-    # Write to all component conf directories
-    for component in components:
+    # Write to only api-server and worker-server conf directories (as per manual.txt)
+    storage_components = ['api', 'worker']  # Only these components need common.properties
+    for component in storage_components:
         component_dir = component_dirs[component]
         conf_dir = os.path.join(extract_dir, component_dir, 'conf')
         props_path = os.path.join(conf_dir, 'common.properties')
         with open(props_path, 'w') as f:
             f.write(common_props_content)
+        logger.info(f"✓ Generated common.properties for {component}-server")
     
-    # Also write to tools/conf
-    tools_props_path = os.path.join(tools_conf_dir, 'common.properties')
-    with open(tools_props_path, 'w') as f:
-        f.write(common_props_content)
-    logger.info("✓ Generated common.properties for all components")
+    # Don't create common.properties in tools/conf - not needed per manual.txt
+    logger.info("✓ Generated common.properties for api-server and worker-server only (matching manual.txt)")
+    
+    # Create plugins_config for S3 storage if needed
+    storage_type = config.get('storage', {}).get('type', 'LOCAL').upper()
+    if storage_type == 'S3':
+        # Create root conf directory and plugins_config
+        root_conf_dir = os.path.join(extract_dir, 'conf')
+        os.makedirs(root_conf_dir, exist_ok=True)
+        
+        plugins_config_content = """# DolphinScheduler Plugins Configuration
+# Specify which plugins to load
+
+--task-plugins--
+dolphinscheduler-task-shell
+--end--
+
+--storage-plugins--
+dolphinscheduler-storage-plugin-s3
+--end--
+"""
+        plugins_config_path = os.path.join(root_conf_dir, 'plugins_config')
+        with open(plugins_config_path, 'w') as f:
+            f.write(plugins_config_content)
+        logger.info("✓ Generated plugins_config for S3 storage")
     
     # Make all shell scripts executable
     for root, dirs, files in os.walk(os.path.join(extract_dir, 'bin')):
@@ -1033,7 +1055,8 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
                 seen_hosts.add(host)
                 all_nodes.append({
                     'host': host,
-                    'components': [component]
+                    'components': [component],
+                    'selector': node.get('selector', 1)
                 })
             else:
                 # Add component to existing node
@@ -1177,7 +1200,7 @@ def deploy_dolphinscheduler_v320(config, package_file=None, username='ec2-user',
         
         elif storage_type == 'S3':
             logger.info("")
-            logger.info("Step 6: S3 storage configured (no additional setup needed)")
+            logger.info("Step 6: S3 storage configured (plugins_config created during local configuration)")
         
         else:
             logger.info("")

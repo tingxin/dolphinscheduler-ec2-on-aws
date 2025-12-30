@@ -184,8 +184,12 @@ def install_mysql_jdbc_driver(ssh, extract_dir, deploy_user):
     """
     logger.info("Installing MySQL JDBC driver...")
     
-    # Download MySQL JDBC driver
+    # Download MySQL JDBC driver (matching manual.txt version)
     mysql_drivers = [
+        {
+            "url": "https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.16/mysql-connector-java-8.0.16.jar",
+            "filename": "mysql-connector-java-8.0.16.jar"
+        },
         {
             "url": "https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar",
             "filename": "mysql-connector-j-8.0.33.jar"
@@ -204,13 +208,17 @@ def install_mysql_jdbc_driver(ssh, extract_dir, deploy_user):
             cd /tmp && \
             rm -f {driver['filename']} && \
             (wget -O {driver['filename']} {driver['url']} || curl -L -o {driver['filename']} {driver['url']}) && \
-            # Copy to all component libs directories
+            # Copy to all component libs directories (matching manual.txt)
+            sudo cp {driver['filename']} {extract_dir}/libs/ && \
             sudo cp {driver['filename']} {extract_dir}/master-server/libs/ && \
             sudo cp {driver['filename']} {extract_dir}/worker-server/libs/ && \
             sudo cp {driver['filename']} {extract_dir}/api-server/libs/ && \
             sudo cp {driver['filename']} {extract_dir}/alert-server/libs/ && \
             sudo cp {driver['filename']} {extract_dir}/tools/libs/ && \
+            sudo chown {deploy_user}:{deploy_user} {extract_dir}/libs/{driver['filename']} && \
             sudo chown {deploy_user}:{deploy_user} {extract_dir}/*/libs/{driver['filename']} && \
+            sudo chmod 777 {extract_dir}/libs/{driver['filename']} && \
+            sudo chmod 777 {extract_dir}/*/libs/{driver['filename']} && \
             ls -la {extract_dir}/master-server/libs/{driver['filename']}
             """
             
@@ -304,44 +312,25 @@ def check_s3_plugin_installed(ssh, extract_dir):
     """
     Check if S3 storage plugin is installed
     
+    For DolphinScheduler 3.2.2+, S3 support is built-in and doesn't require a separate plugin.
+    
     Args:
         ssh: SSH connection
         extract_dir: DolphinScheduler extracted directory
     
     Returns:
-        True if S3 plugin is installed, False otherwise
+        True (S3 support is built-in for 3.2.2+)
     """
-    logger.info("Checking if S3 storage plugin is installed...")
-    
-    check_cmd = f"""
-    # Check for S3 plugin in plugins directory
-    if [ -d {extract_dir}/plugins/dolphinscheduler-storage-plugin-s3 ]; then
-        echo "S3_PLUGIN_FOUND"
-    elif find {extract_dir}/plugins -name "*s3*" -type d 2>/dev/null | grep -q .; then
-        echo "S3_PLUGIN_FOUND"
-    elif find {extract_dir}/plugins -name "*s3*" -type f 2>/dev/null | grep -q .; then
-        echo "S3_PLUGIN_FOUND"
-    else
-        echo "S3_PLUGIN_NOT_FOUND"
-    fi
-    """
-    
-    try:
-        result = execute_remote_command(ssh, check_cmd)
-        if "S3_PLUGIN_FOUND" in result:
-            logger.info("✓ S3 storage plugin is already installed")
-            return True
-        else:
-            logger.info("⚠ S3 storage plugin is NOT installed")
-            return False
-    except Exception as e:
-        logger.warning(f"Could not check S3 plugin status: {e}")
-        return False
+    logger.info("Checking S3 storage support...")
+    logger.info("✓ S3 storage is built-in for DolphinScheduler 3.2.2+ (no plugin required)")
+    return True
 
 
 def install_s3_plugin(ssh, extract_dir, deploy_user, config):
     """
     Install S3 storage plugin for DolphinScheduler
+    
+    For DolphinScheduler 3.2.2+, S3 support is built-in and doesn't require installation.
     
     Args:
         ssh: SSH connection
@@ -350,64 +339,38 @@ def install_s3_plugin(ssh, extract_dir, deploy_user, config):
         config: Configuration dictionary
     
     Returns:
-        True if successful
+        True (S3 support is built-in for 3.2.2+)
     """
-    logger.info("Installing S3 storage plugin...")
+    version = config.get('deployment', {}).get('version', '3.2.2')
+    logger.info(f"S3 storage configuration for DolphinScheduler {version}...")
     
-    # Check if already installed
-    if check_s3_plugin_installed(ssh, extract_dir):
-        logger.info("S3 plugin already installed, skipping installation")
+    # For 3.2.2+, S3 support is built-in
+    if version.startswith('3.2.') and version >= '3.2.2':
+        logger.info("✓ S3 storage is built-in for DolphinScheduler 3.2.2+ (no plugin installation needed)")
+        logger.info("S3 configuration is handled via common.properties")
         return True
-    
-    # Download and install S3 plugin
-    install_script = f"""
-    set -e
-    
-    cd {extract_dir}
-    
-    # Create plugins directory if not exists
-    mkdir -p plugins
-    
-    # Download S3 plugin from Maven repository
-    # Note: S3 storage is built-in for DolphinScheduler 3.2.x, no separate plugin needed
-    # The configuration is done via common.properties
-    echo "S3 storage is built-in for DolphinScheduler 3.2.x"
-    echo "Configuration will be done via common.properties"
-    
-    # Create plugins directory structure (may be needed for other plugins)
-    S3_PLUGIN_URL=""
-    S3_PLUGIN_FILE=""
-    
-    # Download S3 plugin
-    if wget -O "$S3_PLUGIN_FILE" "$S3_PLUGIN_URL" 2>/dev/null || curl -L -o "$S3_PLUGIN_FILE" "$S3_PLUGIN_URL" 2>/dev/null; then
-        echo "✓ S3 plugin downloaded successfully"
-        ls -lh "$S3_PLUGIN_FILE"
-    else
-        echo "⚠ Could not download S3 plugin from Maven, will try alternative method"
+    else:
+        logger.warning(f"S3 plugin installation may be required for version {version}")
+        logger.warning("This deployment script is optimized for DolphinScheduler 3.2.2+")
         
-        # Alternative: Try to build or download from other sources
-        # For now, we'll create a minimal S3 plugin configuration
-        mkdir -p plugins/dolphinscheduler-storage-plugin-s3
-        echo "S3 plugin directory created"
-    fi
-    
-    # Set permissions
-    sudo chown -R {deploy_user}:{deploy_user} plugins
-    sudo chmod -R 755 plugins
-    
-    # Verify installation
-    ls -la plugins/
-    """
-    
-    try:
-        result = execute_remote_command(ssh, install_script, timeout=300)
-        logger.info(f"S3 plugin installation output: {result}")
-        logger.info("✓ S3 storage plugin installed")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to install S3 plugin: {e}")
-        logger.warning("Continuing deployment without S3 plugin - will use fallback storage")
-        return False
+        # Fallback to old plugin installation logic for older versions
+        install_script = f"""
+        set -e
+        cd {extract_dir}
+        mkdir -p plugins
+        echo "S3 storage configuration for version {version}"
+        echo "Note: This script is optimized for DolphinScheduler 3.2.2+"
+        sudo chown -R {deploy_user}:{deploy_user} plugins
+        sudo chmod -R 755 plugins
+        """
+        
+        try:
+            result = execute_remote_command(ssh, install_script, timeout=60)
+            logger.info(f"S3 plugin setup output: {result}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to setup S3 plugin: {e}")
+            return False
 
 
 def configure_s3_storage(ssh, extract_dir, deploy_user, config):

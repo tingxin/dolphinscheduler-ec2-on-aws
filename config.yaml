@@ -156,7 +156,8 @@ deployment:
   parallel_init_workers: 10  # 并行初始化的最大线程数
   download_on_remote: true  # 在目标节点直接下载
   # Java 版本配置（3.2.2 推荐 Java 11）
-  java_home: /usr/lib/jvm/java-11-openjdk-amd64
+  # Amazon Linux 2 的 Java 11 路径（根据实际安装调整）
+  java_home: /usr/lib/jvm/java-11-openjdk
 
 # ================================================================================
 # 【可选配置】以下配置有默认值，可根据需要调整

@@ -160,7 +160,7 @@ def scale_out(config, component, additional_count, config_file):
                     logger.info(f"✓ Worker started on {host}")
                     
                     # Verify
-                    if wait_for_service_ready(host, 1234, max_retries=10):
+                    if wait_for_service_ready(host, 1235, max_retries=10):
                         logger.info(f"✓ Worker service ready on {host}")
                 finally:
                     ssh.close()

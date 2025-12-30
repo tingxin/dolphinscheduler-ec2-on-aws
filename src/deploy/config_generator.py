@@ -23,11 +23,27 @@ def generate_application_yaml_v320(config, component='master'):
     db_config = config['database']
     registry_config = config['registry']
     service_config = config.get('service_config', {}).get(component, {})
-    version = config.get('deployment', {}).get('version', '3.2.0')
+    version = config.get('deployment', {}).get('version', '3.2.2')
     
-    # Build database URL
-    db_params = db_config.get('params', 'useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true')
-    db_url = f"jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?{db_params}"
+    # Build database URL based on database type
+    db_type = db_config.get('type', 'mysql').lower()
+    
+    if db_type == 'postgresql':
+        db_params = db_config.get('params', '')
+        default_port = 5432
+        driver_class = 'org.postgresql.Driver'
+        jdbc_prefix = 'postgresql'
+    else:  # mysql
+        db_params = db_config.get('params', 'useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true')
+        default_port = 3306
+        driver_class = 'com.mysql.cj.jdbc.Driver'
+        jdbc_prefix = 'mysql'
+    
+    port = db_config.get('port', default_port)
+    if db_params:
+        db_url = f"jdbc:{jdbc_prefix}://{db_config['host']}:{port}/{db_config['database']}?{db_params}"
+    else:
+        db_url = f"jdbc:{jdbc_prefix}://{db_config['host']}:{port}/{db_config['database']}"
     
     # Build Zookeeper connection string
     zk_connect = ','.join(registry_config['servers'])
@@ -44,9 +60,9 @@ def generate_application_yaml_v320(config, component='master'):
     if component in ['master', 'worker', 'api', 'alert']:
         yaml_content = f"""spring:
   profiles:
-    active: mysql
+    active: {db_type}
   datasource:
-    driver-class-name: com.mysql.cj.jdbc.Driver
+    driver-class-name: {driver_class}
     url: {db_url}
     username: {db_config['username']}
     password: {db_config['password']}
@@ -107,7 +123,7 @@ metrics:
 
 def generate_install_env_v320(config):
     """
-    Generate install_env.sh for DolphinScheduler 3.2.0
+    Generate install_env.sh for DolphinScheduler 3.2.x
     
     Args:
         config: Configuration dictionary
@@ -141,7 +157,7 @@ def generate_install_env_v320(config):
     alert_ip = config['cluster']['alert']['nodes'][0]['host']
     all_ips.append(alert_ip)
     
-    # Generate install_env.sh content for 3.2.0
+    # Generate install_env.sh content for 3.2.x
     deployment_config = config['deployment']
     registry_config = config['registry']
     
@@ -229,9 +245,23 @@ def generate_dolphinscheduler_env_v320(config):
     # Get Java home - 3.2.2 recommends Java 11
     java_home = deployment_config.get('java_home', '/usr/lib/jvm/java-11-openjdk-amd64')
     
-    # Build database URL
-    db_params = db_config.get('params', 'useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true')
-    db_url = f"jdbc:mysql://{db_config['host']}:{db_config.get('port', 3306)}/{db_config['database']}?{db_params}"
+    # Build database URL based on database type
+    db_type = db_config.get('type', 'mysql').lower()
+    
+    if db_type == 'postgresql':
+        db_params = db_config.get('params', '')
+        default_port = 5432
+        jdbc_prefix = 'postgresql'
+    else:  # mysql
+        db_params = db_config.get('params', 'useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true')
+        default_port = 3306
+        jdbc_prefix = 'mysql'
+    
+    port = db_config.get('port', default_port)
+    if db_params:
+        db_url = f"jdbc:{jdbc_prefix}://{db_config['host']}:{port}/{db_config['database']}?{db_params}"
+    else:
+        db_url = f"jdbc:{jdbc_prefix}://{db_config['host']}:{port}/{db_config['database']}"
     
     # Build Zookeeper connection string
     zk_connect = ','.join(registry_config['servers'])
@@ -245,8 +275,8 @@ def generate_dolphinscheduler_env_v320(config):
 export JAVA_HOME={java_home}
 
 # Database configuration
-export DATABASE=mysql
-export SPRING_PROFILES_ACTIVE=mysql
+export DATABASE={db_type}
+export SPRING_PROFILES_ACTIVE={db_type}
 export SPRING_DATASOURCE_URL="{db_url}"
 export SPRING_DATASOURCE_USERNAME={db_config['username']}
 export SPRING_DATASOURCE_PASSWORD={db_config['password']}
@@ -304,7 +334,6 @@ resource.aws.region={s3_config.get('region', 'us-east-2')}
 resource.aws.s3.bucket.name={s3_config.get('bucket', 'dolphinscheduler')}
 resource.aws.s3.endpoint={s3_config.get('endpoint', f"https://s3.{s3_config.get('region', 'us-east-2')}.amazonaws.com")}
 
-# Azure placeholder configuration (required even if not using Azure)
 resource.azure.client.id={azure_config.get('client_id', 'placeholder')}
 resource.azure.client.secret={azure_config.get('client_secret', 'placeholder')}
 resource.azure.subId={azure_config.get('sub_id', 'placeholder')}

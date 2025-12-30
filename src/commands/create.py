@@ -2,6 +2,7 @@
 Create cluster command implementation
 """
 import time
+import boto3
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.aws.ec2 import create_instances_parallel, wait_for_service_ready
@@ -109,6 +110,173 @@ class DeploymentState:
         self.initialized_nodes.append(host)
 
 
+def analyze_selector_deployment(config):
+    """
+    Analyze selector-based deployment requirements
+    
+    Args:
+        config: Configuration dictionary
+    
+    Returns:
+        Dictionary mapping selector to deployment info
+    """
+    selector_map = {}
+    
+    # Analyze each component's selector requirements
+    for component in ['master', 'worker', 'api', 'alert']:
+        component_config = config['cluster'][component]
+        nodes = component_config.get('nodes', [])
+        
+        for i, node in enumerate(nodes):
+            selector = node.get('selector', i + 1)  # Default to index-based if no selector
+            availability_zone = node.get('availability_zone')
+            
+            if selector not in selector_map:
+                selector_map[selector] = {
+                    'components': [],
+                    'availability_zone': availability_zone,
+                    'instance_type': None,
+                    'node_configs': {}
+                }
+            
+            # Add component to this selector
+            selector_map[selector]['components'].append(component)
+            selector_map[selector]['node_configs'][component] = node
+            
+            # Use the largest instance type among components sharing this selector
+            current_instance_type = component_config.get('instance_type', 't3.large')
+            if selector_map[selector]['instance_type'] is None:
+                selector_map[selector]['instance_type'] = current_instance_type
+            else:
+                # Simple logic: prefer larger instance types (this could be more sophisticated)
+                current_size = get_instance_size_priority(current_instance_type)
+                existing_size = get_instance_size_priority(selector_map[selector]['instance_type'])
+                if current_size > existing_size:
+                    selector_map[selector]['instance_type'] = current_instance_type
+    
+    return selector_map
+
+
+def get_instance_size_priority(instance_type):
+    """
+    Get priority score for instance type (larger = higher priority)
+    
+    Args:
+        instance_type: EC2 instance type
+    
+    Returns:
+        Priority score
+    """
+    size_map = {
+        'nano': 1, 'micro': 2, 'small': 3, 'medium': 4, 'large': 5,
+        'xlarge': 6, '2xlarge': 7, '4xlarge': 8, '8xlarge': 9, '16xlarge': 10
+    }
+    
+    for size, priority in size_map.items():
+        if size in instance_type:
+            return priority
+    
+    return 5  # Default to 'large' priority
+
+
+def create_selector_instance(config, selector, selector_info, subnet_id, availability_zone):
+    """
+    Create EC2 instance for a selector
+    
+    Args:
+        config: Configuration dictionary
+        selector: Selector value
+        selector_info: Selector deployment info
+        subnet_id: Subnet ID
+        availability_zone: Availability zone
+    
+    Returns:
+        Instance object
+    """
+    from src.aws.ec2 import create_ec2_instance
+    
+    # Use the primary component for instance creation parameters
+    primary_component = selector_info['components'][0]
+    instance_type = selector_info['instance_type']
+    
+    # Create a temporary config for this selector
+    selector_config = config.copy()
+    selector_config['cluster'] = {primary_component: {'instance_type': instance_type}}
+    
+    # Create instance with selector-based naming
+    ec2 = boto3.resource('ec2', region_name=config['aws']['region'])
+    
+    # Get AMI
+    from src.aws.ec2 import get_ami_id
+    ami_id = get_ami_id(config['aws']['region'])
+    
+    # Get security group (use the first component's security group)
+    security_group = config['aws']['security_groups'][primary_component]
+    key_name = config['aws']['key_name']
+    iam_profile = config['aws'].get('iam_instance_profile')
+    
+    # Get volume configuration from primary component
+    ec2_advanced = config.get('ec2_advanced', {}).get(primary_component, {})
+    volume_size = ec2_advanced.get('root_volume_size', 50)
+    volume_type = ec2_advanced.get('root_volume_type', 'gp3')
+    
+    # Tags for selector-based instance
+    project_name = config.get('project', {}).get('name', 'dolphinscheduler')
+    components_str = '-'.join(selector_info['components'])
+    
+    base_tags = {
+        'Name': f"ds-selector-{selector}",
+        'Selector': str(selector),
+        'Components': components_str,
+        'ManagedBy': 'dolphinscheduler-cli',
+        'Project': project_name
+    }
+    
+    # Convert to AWS tag format
+    resource_tags = [{'Key': k, 'Value': v} for k, v in base_tags.items()]
+    tag_specifications = [
+        {'ResourceType': 'instance', 'Tags': resource_tags},
+        {'ResourceType': 'volume', 'Tags': resource_tags}
+    ]
+    
+    # Create instance
+    logger.info(f"Creating selector {selector} instance ({components_str}) in {availability_zone}...")
+    
+    create_params = {
+        'ImageId': ami_id,
+        'InstanceType': instance_type,
+        'MinCount': 1,
+        'MaxCount': 1,
+        'KeyName': key_name,
+        'SecurityGroupIds': [security_group],
+        'SubnetId': subnet_id,
+        'TagSpecifications': tag_specifications,
+        'BlockDeviceMappings': [{
+            'DeviceName': '/dev/xvda',
+            'Ebs': {
+                'VolumeSize': volume_size,
+                'VolumeType': volume_type,
+                'DeleteOnTermination': True
+            }
+        }]
+    }
+    
+    if iam_profile:
+        create_params['IamInstanceProfile'] = {'Name': iam_profile}
+    
+    instances = ec2.create_instances(**create_params)
+    instance = instances[0]
+    
+    # Wait for instance to be running
+    logger.info(f"Waiting for selector {selector} instance {instance.id} to start...")
+    instance.wait_until_running()
+    instance.reload()
+    
+    logger.info(f"✓ Selector {selector} instance created: {instance.id} ({instance.private_ip_address})")
+    
+    return instance
+
+
 def distribute_nodes_across_azs(count, subnets):
     """
     Distribute nodes evenly across availability zones
@@ -133,7 +301,7 @@ def distribute_nodes_across_azs(count, subnets):
 
 def create_cluster(config):
     """
-    Create DolphinScheduler cluster
+    Create DolphinScheduler cluster with selector-based deployment
     
     Args:
         config: Configuration dictionary
@@ -145,61 +313,58 @@ def create_cluster(config):
     subnets = config['aws']['subnets']
     
     try:
-        # Step 1: Create EC2 instances
+        # Step 1: Create EC2 instances (selector-based)
         logger.info("=" * 70)
-        logger.info("Step 1: Creating EC2 Instances")
+        logger.info("Step 1: Creating EC2 Instances (Selector-based)")
         logger.info("=" * 70)
         
+        # Analyze selector-based deployment requirements
+        selector_map = analyze_selector_deployment(config)
+        logger.info(f"\nSelector deployment plan:")
+        for selector, info in selector_map.items():
+            components = ', '.join(info['components'])
+            logger.info(f"  Selector {selector}: {components} -> {info['availability_zone']}")
+        
+        # Create instances based on selectors
         all_instances = {}
+        selector_instances = {}
         
-        # Create Master instances
-        logger.info(f"\nCreating {config['cluster']['master']['count']} Master instances...")
-        master_instances = create_instances_parallel(
-            config, 'master',
-            config['cluster']['master']['count'],
-            subnets
-        )
-        all_instances['master'] = master_instances
-        for instance in master_instances:
-            state.add_instance(instance)
-        logger.info(f"✓ Created {len(master_instances)} Master instances")
+        logger.info(f"\nCreating {len(selector_map)} EC2 instances for selectors...")
         
-        # Create Worker instances
-        logger.info(f"\nCreating {config['cluster']['worker']['count']} Worker instances...")
-        worker_instances = create_instances_parallel(
-            config, 'worker',
-            config['cluster']['worker']['count'],
-            subnets
-        )
-        all_instances['worker'] = worker_instances
-        for instance in worker_instances:
+        for selector, info in selector_map.items():
+            # Find subnet for the availability zone
+            target_subnet = None
+            for subnet in subnets:
+                if subnet['availability_zone'] == info['availability_zone']:
+                    target_subnet = subnet
+                    break
+            
+            if not target_subnet:
+                raise Exception(f"No subnet found for availability zone: {info['availability_zone']}")
+            
+            # Create instance for this selector (use the primary component for naming)
+            primary_component = info['components'][0]
+            logger.info(f"Creating instance for selector {selector} ({', '.join(info['components'])})...")
+            
+            instance = create_selector_instance(
+                config, selector, info, target_subnet['subnet_id'], info['availability_zone']
+            )
+            
+            selector_instances[selector] = instance
             state.add_instance(instance)
-        logger.info(f"✓ Created {len(worker_instances)} Worker instances")
+            
+            # Map instance to all components that use this selector
+            for component in info['components']:
+                if component not in all_instances:
+                    all_instances[component] = []
+                all_instances[component].append(instance)
+            
+            logger.info(f"✓ Created instance {instance.id} for selector {selector}")
         
-        # Create API instances
-        logger.info(f"\nCreating {config['cluster']['api']['count']} API instances...")
-        api_instances = create_instances_parallel(
-            config, 'api',
-            config['cluster']['api']['count'],
-            subnets
-        )
-        all_instances['api'] = api_instances
-        for instance in api_instances:
-            state.add_instance(instance)
-        logger.info(f"✓ Created {len(api_instances)} API instances")
-        
-        # Create Alert instance
-        logger.info(f"\nCreating 1 Alert instance...")
-        alert_instances = create_instances_parallel(
-            config, 'alert', 1, subnets
-        )
-        all_instances['alert'] = alert_instances
-        for instance in alert_instances:
-            state.add_instance(instance)
-        logger.info(f"✓ Created {len(alert_instances)} Alert instance")
+        logger.info(f"✓ Created {len(selector_instances)} instances for {len(selector_map)} selectors")
         
         # Update config with actual instance information
-        update_config_with_instances(config, all_instances)
+        update_config_with_selector_instances(config, selector_instances, selector_map)
         
         # Step 2: Wait for SSH
         logger.info("\n" + "=" * 70)
@@ -292,8 +457,8 @@ def create_cluster(config):
         logger.info("\nVerifying services...")
         
         # Get service ports from config
-        master_port = config.get('service_config', {}).get('master', {}).get('listen_port', 5678)
-        worker_port = config.get('service_config', {}).get('worker', {}).get('listen_port', 1234)
+        master_port = config.get('service_config', {}).get('master', {}).get('listen_port', 5679)
+        worker_port = config.get('service_config', {}).get('worker', {}).get('listen_port', 1235)
         api_port = config.get('service_config', {}).get('api', {}).get('port', 12345)
         
         # Check Master services
@@ -353,9 +518,56 @@ def create_cluster(config):
         raise
 
 
+def update_config_with_selector_instances(config, selector_instances, selector_map):
+    """
+    Update configuration with actual instance information for selector-based deployment
+    
+    Args:
+        config: Configuration dictionary
+        selector_instances: Dictionary of instances by selector
+        selector_map: Selector deployment mapping
+    """
+    # Clear existing nodes
+    for component in ['master', 'worker', 'api', 'alert']:
+        config['cluster'][component]['nodes'] = []
+    
+    # Update nodes based on selector mapping
+    for selector, instance in selector_instances.items():
+        selector_info = selector_map[selector]
+        
+        for component in selector_info['components']:
+            # Find the original node config for this component and selector
+            original_node = None
+            for node in config['cluster'][component].get('nodes', []):
+                if node.get('selector') == selector:
+                    original_node = node
+                    break
+            
+            if not original_node:
+                # Create a default node config if not found
+                original_node = {'selector': selector}
+            
+            node_info = {
+                'host': instance.private_ip_address,
+                'ssh_port': 22,
+                'instance_id': instance.id,
+                'subnet_id': instance.subnet_id,
+                'availability_zone': instance.placement['AvailabilityZone'],
+                'selector': selector
+            }
+            
+            # Preserve original node configuration
+            if 'groups' in original_node:
+                node_info['groups'] = original_node['groups']
+            elif component == 'worker':
+                node_info['groups'] = ['default']
+            
+            config['cluster'][component]['nodes'].append(node_info)
+
+
 def update_config_with_instances(config, instances):
     """
-    Update configuration with actual instance information
+    Update configuration with actual instance information (legacy function)
     
     Args:
         config: Configuration dictionary
