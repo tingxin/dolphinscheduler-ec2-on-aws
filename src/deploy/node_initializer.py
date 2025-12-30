@@ -200,22 +200,28 @@ def setup_ssh_keys(nodes, username='ubuntu', key_file=None, config=None):
     ssh = connect_ssh(first_node, username, key_file, config=config)
     
     try:
-        # Generate key for dolphinscheduler user if not exists (without randomart to avoid parsing issues)
+        # Generate key for dolphinscheduler user if not exists
+        # First ensure home directory exists with sudo, then operate as user
         generate_key_script = f"""
-        sudo -u {deploy_user} bash -c '
-            mkdir -p /home/{deploy_user}/.ssh
-            chmod 700 /home/{deploy_user}/.ssh
-            if [ ! -f /home/{deploy_user}/.ssh/id_rsa ]; then
-                # Generate SSH key without randomart display to avoid parsing issues
-                ssh-keygen -t rsa -b 4096 -f /home/{deploy_user}/.ssh/id_rsa -N "" -q -C "{deploy_user}@dolphinscheduler"
-                echo "SSH key generated successfully"
-            else
-                echo "SSH key already exists"
-            fi
-            # Ensure correct permissions
-            chmod 600 /home/{deploy_user}/.ssh/id_rsa
-            chmod 644 /home/{deploy_user}/.ssh/id_rsa.pub
-        '
+        # Ensure home directory exists (requires sudo)
+        sudo mkdir -p /home/{deploy_user}/.ssh
+        sudo chown -R {deploy_user}:{deploy_user} /home/{deploy_user}
+        sudo chmod 755 /home/{deploy_user}
+        sudo chmod 700 /home/{deploy_user}/.ssh
+        
+        # Generate SSH key as the user
+        if [ ! -f /home/{deploy_user}/.ssh/id_rsa ]; then
+            sudo -u {deploy_user} ssh-keygen -t rsa -b 4096 -f /home/{deploy_user}/.ssh/id_rsa -N "" -q -C "{deploy_user}@dolphinscheduler"
+            echo "SSH key generated successfully"
+        else
+            echo "SSH key already exists"
+        fi
+        
+        # Ensure correct permissions
+        sudo chmod 600 /home/{deploy_user}/.ssh/id_rsa
+        sudo chmod 644 /home/{deploy_user}/.ssh/id_rsa.pub
+        sudo chown {deploy_user}:{deploy_user} /home/{deploy_user}/.ssh/id_rsa
+        sudo chown {deploy_user}:{deploy_user} /home/{deploy_user}/.ssh/id_rsa.pub
         """
         
         # Generate key first
@@ -223,7 +229,7 @@ def setup_ssh_keys(nodes, username='ubuntu', key_file=None, config=None):
         logger.debug(f"SSH key generation output: {key_gen_output}")
         
         # Then get the public key content separately
-        get_pubkey_script = f"sudo -u {deploy_user} cat /home/{deploy_user}/.ssh/id_rsa.pub"
+        get_pubkey_script = f"sudo cat /home/{deploy_user}/.ssh/id_rsa.pub"
         pub_key_output = execute_remote_command(ssh, get_pubkey_script)
         
         # Extract only the public key line (starts with ssh-rsa, ssh-ed25519, etc.)
@@ -247,14 +253,16 @@ def setup_ssh_keys(nodes, username='ubuntu', key_file=None, config=None):
     def add_key_to_node(node):
         ssh = connect_ssh(node['host'], username, key_file, config=config)
         try:
-            # Create SSH directory first
+            # Create SSH directory first with sudo
             setup_ssh_dir_script = f"""
-            sudo -u {deploy_user} bash -c '
-                mkdir -p /home/{deploy_user}/.ssh
-                chmod 700 /home/{deploy_user}/.ssh
-                touch /home/{deploy_user}/.ssh/authorized_keys
-                chmod 600 /home/{deploy_user}/.ssh/authorized_keys
-            '
+            # Ensure home directory and .ssh exist (requires sudo)
+            sudo mkdir -p /home/{deploy_user}/.ssh
+            sudo chown -R {deploy_user}:{deploy_user} /home/{deploy_user}
+            sudo chmod 755 /home/{deploy_user}
+            sudo chmod 700 /home/{deploy_user}/.ssh
+            sudo touch /home/{deploy_user}/.ssh/authorized_keys
+            sudo chown {deploy_user}:{deploy_user} /home/{deploy_user}/.ssh/authorized_keys
+            sudo chmod 600 /home/{deploy_user}/.ssh/authorized_keys
             """
             execute_remote_command(ssh, setup_ssh_dir_script)
             
@@ -264,16 +272,17 @@ def setup_ssh_keys(nodes, username='ubuntu', key_file=None, config=None):
             
             add_key_script = f"""
             # Add public key to authorized_keys if not already present
-            if ! sudo -u {deploy_user} grep -Fxq '{escaped_pub_key}' /home/{deploy_user}/.ssh/authorized_keys 2>/dev/null; then
-                echo '{escaped_pub_key}' | sudo -u {deploy_user} tee -a /home/{deploy_user}/.ssh/authorized_keys > /dev/null
+            if ! sudo grep -Fxq '{escaped_pub_key}' /home/{deploy_user}/.ssh/authorized_keys 2>/dev/null; then
+                echo '{escaped_pub_key}' | sudo tee -a /home/{deploy_user}/.ssh/authorized_keys > /dev/null
                 echo "Public key added"
             else
                 echo "Public key already exists"
             fi
             
             # Ensure correct permissions
-            sudo -u {deploy_user} chmod 600 /home/{deploy_user}/.ssh/authorized_keys
-            sudo -u {deploy_user} chmod 700 /home/{deploy_user}/.ssh
+            sudo chmod 600 /home/{deploy_user}/.ssh/authorized_keys
+            sudo chmod 700 /home/{deploy_user}/.ssh
+            sudo chown -R {deploy_user}:{deploy_user} /home/{deploy_user}/.ssh
             """
             
             result = execute_remote_command(ssh, add_key_script)
